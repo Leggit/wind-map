@@ -28,14 +28,29 @@ interface ProjectedSample {
   sample: WindSample;
 }
 
-const PARTICLE_COUNT = 1200;
-const PARTICLE_LENGTH_MULTIPLIER = 100;
-const PARTICLE_SIZE_FACTOR = 0.6;
+interface ParticleSettings {
+  count: number;
+  sizeFactor: number;
+}
+
 const WIND_INTERPOLATION_NEIGHBORS = 4;
 const PARTICLE_MIN_LIFETIME = 480;
 const PARTICLE_LIFETIME_VARIATION = 360;
 const PARTICLE_FADE_IN = 24;
 const PARTICLE_FADE_OUT = 60;
+
+function getParticleSettings(screenWidth: number): ParticleSettings {
+  if (screenWidth <= 760) {
+    return { count: 350, sizeFactor: 0.3 };
+  }
+  if (screenWidth <= 1023) {
+    return { count: 450, sizeFactor: 0.4 };
+  }
+  if (screenWidth < 1920) {
+    return { count: 600, sizeFactor: 0.4 };
+  }
+  return { count: 900, sizeFactor: 0.4 };
+}
 
 function hexToRgb(hex: string): [number, number, number] {
   const value = Number.parseInt(hex.slice(1), 16);
@@ -89,11 +104,11 @@ const fragmentShaderSource = `
       if (speed <= 60.0) return u_dark_strong;
       return u_dark_severe;
     }
-    if (speed <= 15.0) return vec3(0.043, 0.302, 0.416);
-    if (speed <= 30.0) return vec3(0.114, 0.306, 0.847);
-    if (speed <= 45.0) return vec3(0.357, 0.129, 0.714);
-    if (speed <= 60.0) return vec3(0.522, 0.098, 0.561);
-    return vec3(0.602, 0.204, 0.055);
+    if (speed <= 15.0) return vec3(0.027, 0.349, 0.522);
+    if (speed <= 30.0) return vec3(0.145, 0.388, 0.922);
+    if (speed <= 45.0) return vec3(0.427, 0.157, 0.851);
+    if (speed <= 60.0) return vec3(0.753, 0.149, 0.827);
+    return vec3(0.761, 0.255, 0.047);
   }
 
   void main() {
@@ -195,9 +210,9 @@ function createParticle(
   width: number,
   height: number,
   samples: ProjectedSample[],
+  x = Math.random() * width,
+  y = Math.random() * height,
 ): Particle {
-  const x = Math.random() * width;
-  const y = Math.random() * height;
   const wind = interpolateWind(x, y, samples);
   const maxLife =
     PARTICLE_MIN_LIFETIME + Math.random() * PARTICLE_LIFETIME_VARIATION;
@@ -222,10 +237,12 @@ export function WindParticles({
   darkMode,
 }: WindParticlesProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !map || !field || !isPlaying) {
+    if (!canvas || !map || !field) {
       if (canvas) {
         const gl = canvas.getContext("webgl");
         gl?.clearColor(0, 0, 0, 0);
@@ -304,6 +321,9 @@ export function WindParticles({
 
     let projectedSamples: ProjectedSample[] = [];
     let particles: Particle[] = [];
+    let segmentData = new Float32Array(0);
+    let particleCount = 0;
+    let particleSizeFactor = 0.4;
     let animationFrame = 0;
 
     const getMapSize = () => ({
@@ -314,6 +334,10 @@ export function WindParticles({
     const resize = () => {
       const { width, height } = getMapSize();
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const particleSettings = getParticleSettings(window.innerWidth);
+      console.log(particleSettings);
+      particleCount = particleSettings.count;
+      particleSizeFactor = particleSettings.sizeFactor;
       canvas.width = Math.round(width * pixelRatio);
       canvas.height = Math.round(height * pixelRatio);
       canvas.style.width = `${width}px`;
@@ -329,59 +353,226 @@ export function WindParticles({
           sample,
         };
       });
-      particles = Array.from({ length: PARTICLE_COUNT }, () =>
+      particles = Array.from({ length: particleCount }, () =>
         createParticle(
           width * pixelRatio,
           height * pixelRatio,
           projectedSamples,
         ),
       );
+      segmentData = new Float32Array(particles.length * 24);
     };
 
     const animate = () => {
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-      const segmentData = new Float32Array(PARTICLE_COUNT * 24);
+      const bearing = (map.getBearing() * Math.PI) / 180;
+      const bearingCosine = Math.cos(bearing);
+      const bearingSine = Math.sin(bearing);
+      const densityCellSize = 64 * pixelRatio;
+      const densityColumns = Math.max(
+        1,
+        Math.ceil(canvas.width / densityCellSize),
+      );
+      const densityRows = Math.max(
+        1,
+        Math.ceil(canvas.height / densityCellSize),
+      );
+      const densityGrid = new Uint16Array(densityColumns * densityRows);
 
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
 
       for (let index = 0; index < particles.length; index += 1) {
-        const particle = particles[index];
-        const wind = interpolateWind(
-          particle.x,
-          particle.y,
-          projectedSamples,
-        );
-        particle.east = wind?.east ?? 0;
-        particle.north = wind?.north ?? 0;
-        particle.speed = wind?.speed ?? 0;
-        particle.previousX = particle.x;
-        particle.previousY = particle.y;
-        particle.x += particle.east * 0.035 * pixelRatio;
-        particle.y -= particle.north * 0.035 * pixelRatio;
-        particle.life += 1;
-
-        if (
-          particle.life > particle.maxLife ||
-          particle.x < 0 ||
-          particle.x > canvas.width ||
-          particle.y < 0 ||
-          particle.y > canvas.height
-        ) {
-          particles[index] = createParticle(
-            canvas.width,
-            canvas.height,
+        let particle = particles[index];
+        if (isPlayingRef.current) {
+          const wind = interpolateWind(
+            particle.x,
+            particle.y,
             projectedSamples,
           );
-          particles[index].life = 0;
+          particle.east = wind?.east ?? 0;
+          particle.north = wind?.north ?? 0;
+          particle.speed = wind?.speed ?? 0;
+          particle.previousX = particle.x;
+          particle.previousY = particle.y;
+          particle.x +=
+            (particle.east * bearingCosine -
+              particle.north * bearingSine) *
+            0.035 *
+            pixelRatio;
+          particle.y -=
+            (particle.east * bearingSine +
+              particle.north * bearingCosine) *
+            0.035 *
+            pixelRatio;
+          particle.life += 1;
+
+          if (
+            particle.life > particle.maxLife ||
+            particle.x < 0 ||
+            particle.x > canvas.width ||
+            particle.y < 0 ||
+            particle.y > canvas.height
+          ) {
+            particle = createParticle(
+              canvas.width,
+              canvas.height,
+              projectedSamples,
+            );
+            particle.life = 0;
+            particles[index] = particle;
+          }
+        }
+
+        const cellX = Math.min(
+          densityColumns - 1,
+          Math.floor(particle.x / densityCellSize),
+        );
+        const cellY = Math.min(
+          densityRows - 1,
+          Math.floor(particle.y / densityCellSize),
+        );
+        densityGrid[cellY * densityColumns + cellX] += 1;
+      }
+
+      const averageDensity = particles.length / densityGrid.length;
+      const maximumCellDensity = averageDensity * 1.5;
+      const maximumRedistributions = Math.max(
+        1,
+        Math.floor(particles.length * 0.002),
+      );
+      let redistributedCount = 0;
+      for (
+        let sourceCell = 0;
+        sourceCell < densityGrid.length &&
+        redistributedCount < maximumRedistributions;
+        sourceCell += 1
+      ) {
+        let particlesToMove = Math.min(
+          Math.ceil(densityGrid[sourceCell] - maximumCellDensity),
+          maximumRedistributions - redistributedCount,
+        );
+        if (particlesToMove <= 0) {
           continue;
         }
 
-        const opacity = Math.min(
+        for (
+          let particleIndex = particles.length - 1;
+          particleIndex >= 0 && particlesToMove > 0;
+          particleIndex -= 1
+        ) {
+          const particle = particles[particleIndex];
+          const particleCellX = Math.min(
+            densityColumns - 1,
+            Math.floor(particle.x / densityCellSize),
+          );
+          const particleCellY = Math.min(
+            densityRows - 1,
+            Math.floor(particle.y / densityCellSize),
+          );
+          if (particleCellY * densityColumns + particleCellX !== sourceCell) {
+            continue;
+          }
+
+          let leastPopulation = Number.POSITIVE_INFINITY;
+          const destinationCells: number[] = [];
+          for (
+            let destinationCell = 0;
+            destinationCell < densityGrid.length;
+            destinationCell += 1
+          ) {
+            const population = densityGrid[destinationCell];
+            if (
+              destinationCell === sourceCell ||
+              population >= averageDensity * 1.25
+            ) {
+              continue;
+            }
+            if (population < leastPopulation) {
+              leastPopulation = population;
+              destinationCells.length = 0;
+              destinationCells.push(destinationCell);
+            } else if (population === leastPopulation) {
+              destinationCells.push(destinationCell);
+            }
+          }
+          if (destinationCells.length === 0) {
+            break;
+          }
+
+          const destinationCell =
+            destinationCells[
+              Math.floor(Math.random() * destinationCells.length)
+            ];
+          const destinationColumn = destinationCell % densityColumns;
+          const destinationRow = Math.floor(destinationCell / densityColumns);
+          const destinationX =
+            destinationColumn * densityCellSize +
+            Math.random() *
+              Math.min(
+                densityCellSize,
+                canvas.width - destinationColumn * densityCellSize,
+              );
+          const destinationY =
+            destinationRow * densityCellSize +
+            Math.random() *
+              Math.min(
+                densityCellSize,
+                canvas.height - destinationRow * densityCellSize,
+              );
+          const respawnedParticle = createParticle(
+            canvas.width,
+            canvas.height,
+            projectedSamples,
+            destinationX,
+            destinationY,
+          );
+          respawnedParticle.life = 0;
+          particles[particleIndex] = respawnedParticle;
+          densityGrid[sourceCell] -= 1;
+          densityGrid[destinationCell] += 1;
+          particlesToMove -= 1;
+          redistributedCount += 1;
+        }
+      }
+
+      for (let index = 0; index < particles.length; index += 1) {
+        const particle = particles[index];
+        const cellX = Math.min(
+          densityColumns - 1,
+          Math.floor(particle.x / densityCellSize),
+        );
+        const cellY = Math.min(
+          densityRows - 1,
+          Math.floor(particle.y / densityCellSize),
+        );
+        let nearbyCount = 0;
+        let nearbyCells = 0;
+        for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+          const neighborY = cellY + offsetY;
+          if (neighborY < 0 || neighborY >= densityRows) {
+            continue;
+          }
+          for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+            const neighborX = cellX + offsetX;
+            if (neighborX < 0 || neighborX >= densityColumns) {
+              continue;
+            }
+            nearbyCount += densityGrid[neighborY * densityColumns + neighborX];
+            nearbyCells += 1;
+          }
+        }
+        const localDensity = nearbyCount / nearbyCells;
+        const densityOpacity = Math.max(
+          darkMode ? 0.45 : 0.55,
+          Math.min(averageDensity / localDensity, 1),
+        );
+        const lifetimeOpacity = Math.min(
           particle.life / PARTICLE_FADE_IN,
           (particle.maxLife - particle.life) / PARTICLE_FADE_OUT,
-          0.78,
+          0.9,
         );
+        const opacity = lifetimeOpacity * densityOpacity;
         const deltaX = particle.x - particle.previousX;
         const deltaY = particle.y - particle.previousY;
         const distance = Math.hypot(deltaX, deltaY);
@@ -389,13 +580,8 @@ export function WindParticles({
         let tailX = particle.previousX;
         let tailY = particle.previousY;
         if (distance > 0) {
-          const tailLength = Math.min(
-            30 * PARTICLE_SIZE_FACTOR * pixelRatio,
-            Math.max(
-              7 * PARTICLE_SIZE_FACTOR * pixelRatio,
-              distance * PARTICLE_LENGTH_MULTIPLIER,
-            ),
-          );
+          const tailLength =
+            (darkMode ? 24 : 30) * particleSizeFactor * pixelRatio;
           tailX = particle.x - (deltaX / distance) * tailLength;
           tailY = particle.y - (deltaY / distance) * tailLength;
         }
@@ -407,11 +593,9 @@ export function WindParticles({
           normalY = deltaX / distance;
         }
         const halfWidth =
-          (0.8 + (Math.min(particle.speed, 60) / 60) * 1.2) *
-          PARTICLE_SIZE_FACTOR *
-          pixelRatio;
+          (darkMode ? 2.1 : 3.1) * particleSizeFactor * pixelRatio;
 
-        const tailAlpha = opacity * 0.12;
+        const tailAlpha = opacity * (darkMode ? 0.15 : 0.35);
         const offset = index * 24;
         const tailLeftX = tailX + normalX * halfWidth;
         const tailLeftY = tailY + normalY * halfWidth;
@@ -458,7 +642,7 @@ export function WindParticles({
       gl.vertexAttribPointer(alphaLocation, 1, gl.FLOAT, false, 16, 12);
       gl.vertexAttribPointer(speedLocation, 1, gl.FLOAT, false, 16, 8);
 
-      gl.drawArrays(gl.TRIANGLES, 0, PARTICLE_COUNT * 6);
+      gl.drawArrays(gl.TRIANGLES, 0, particles.length * 6);
       animationFrame = window.requestAnimationFrame(animate);
     };
 
@@ -488,7 +672,7 @@ export function WindParticles({
       gl.deleteBuffer(buffer);
       gl.deleteProgram(program);
     };
-  }, [darkMode, field, isPlaying, map]);
+  }, [darkMode, field, map]);
 
   return (
     <canvas aria-hidden="true" className="wind-particles" ref={canvasRef} />

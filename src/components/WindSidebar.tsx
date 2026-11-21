@@ -6,6 +6,7 @@ import {
   WIND_SPEED_UNITS,
   type WindSpeedUnit,
 } from "../data/wind-units";
+import { getWindDirection } from "../data/wind-directions";
 import type { MapLocation } from "../types";
 import { Icon } from "./Icon";
 
@@ -20,29 +21,6 @@ interface WindSidebarProps {
   onPlaybackChange: (isPlaying: boolean) => void;
   onPointerSpeedChange: (show: boolean) => void;
   onSpeedUnitChange: (unit: WindSpeedUnit) => void;
-}
-
-const COMPASS_POINTS = [
-  "N",
-  "NNE",
-  "NE",
-  "ENE",
-  "E",
-  "ESE",
-  "SE",
-  "SSE",
-  "S",
-  "SSW",
-  "SW",
-  "WSW",
-  "W",
-  "WNW",
-  "NW",
-  "NNW",
-];
-
-function getDirection(degrees: number): string {
-  return COMPASS_POINTS[Math.round(degrees / 22.5) % COMPASS_POINTS.length];
 }
 
 function formatTime(value: string | undefined): string {
@@ -72,6 +50,7 @@ export function WindSidebar({
   onSpeedUnitChange,
 }: WindSidebarProps) {
   const [query, setQuery] = useState("");
+  const [isMobileExpanded, setIsMobileExpanded] = useState(false);
   const [searchState, setSearchState] = useState<"idle" | "loading" | "error">(
     "idle",
   );
@@ -127,186 +106,198 @@ export function WindSidebar({
       ? null
       : formatWindSpeed(primaryWind.speed, speedUnit);
   const windDirection = primaryWind
-    ? getDirection(primaryWind.direction)
+    ? getWindDirection(primaryWind.direction)
     : "—";
 
   return (
-    <aside aria-label="Wind conditions" className="sidebar">
+    <aside
+      aria-label="Wind conditions"
+      className={`sidebar${isMobileExpanded ? " sidebar--expanded" : ""}`}
+    >
       <header className="brand">
-        <div aria-hidden="true" className="brand__mark">
-          <Icon name="wind" />
-        </div>
-        <span className="brand__name">zephyr</span>
-        <span className="brand__tag">WEATHER AT A GLANCE</span>
+        <span className="brand__name">Wind map</span>
+        <span
+          className={`status-pill status-pill--${windStatus}`}
+          role="status"
+        >
+          <span className="status-pill__dot" />
+          {windStatus === "loading"
+            ? "LOADING"
+            : windStatus === "error"
+              ? "OFFLINE"
+              : windField?.isStale
+                ? "CACHED"
+                : "LIVE"}
+        </span>
+        <button
+          aria-controls="wind-sidebar-content"
+          aria-expanded={isMobileExpanded}
+          aria-label={
+            isMobileExpanded ? "Hide wind controls" : "Show wind controls"
+          }
+          className="sidebar__toggle"
+          onClick={() => setIsMobileExpanded(!isMobileExpanded)}
+          type="button"
+        >
+          {isMobileExpanded ? "Close" : "Details"}
+        </button>
       </header>
 
-      <form className="location-search" onSubmit={searchLocation}>
-        <Icon className="location-search__icon" name="search" />
-        <input
-          aria-label="Search a place"
-          onChange={(event) => {
-            setQuery(event.target.value);
-            if (searchState === "error") setSearchState("idle");
-          }}
-          placeholder="Search any place..."
-          value={query}
-        />
-        <button
-          aria-label="Search"
-          disabled={searchState === "loading"}
-          type="submit"
-        >
-          {searchState === "loading" ? "…" : "↵"}
-        </button>
-      </form>
-      {searchState === "error" && (
-        <p className="search-error" role="status">
-          No place found. Try another search.
-        </p>
-      )}
-
-      <section className="conditions">
-        <div className="section-label">
-          <span>WIND CONDITIONS</span>
-          <span
-            className={`status-pill status-pill--${windStatus}`}
-            role="status"
+      <div className="sidebar__content" id="wind-sidebar-content">
+        <form className="location-search" onSubmit={searchLocation}>
+          <Icon className="location-search__icon" name="search" />
+          <input
+            aria-label="Search a place"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              if (searchState === "error") setSearchState("idle");
+            }}
+            placeholder="Search any place..."
+            value={query}
+          />
+          <button
+            aria-label="Search"
+            disabled={searchState === "loading"}
+            type="submit"
           >
-            <span className="status-pill__dot" />
-            {windStatus === "loading"
-              ? "LOADING"
-              : windStatus === "error"
-                ? "OFFLINE"
-                : windField?.isStale
-                  ? "CACHED"
-                  : "LIVE"}
-          </span>
-        </div>
+            {searchState === "loading" ? "…" : "↵"}
+          </button>
+        </form>
+        {searchState === "error" && (
+          <p className="search-error" role="status">
+            No place found. Try another search.
+          </p>
+        )}
 
-        <div className="place-name">
-          <Icon name="pin" />
-          <span>{location.name}</span>
-        </div>
-
-        <div className="speed-card">
-          <div className="speed-card__header">
-            <span className="speed-card__label">Wind speed at map center</span>
-            <div aria-label="Wind speed units" className="unit-selector" role="group">
-              {WIND_SPEED_UNITS.map((unit) => (
-                <button
-                  aria-pressed={speedUnit === unit.value}
-                  className={
-                    speedUnit === unit.value ? "unit-selector__active" : ""
-                  }
-                  key={unit.value}
-                  onClick={() => onSpeedUnitChange(unit.value)}
-                  type="button"
-                >
-                  {unit.label}
-                </button>
-              ))}
+        <section className="conditions">
+          <div className="speed-card">
+            <div className="speed-card__header">
+              <span className="speed-card__label">
+                Wind speed at map center
+              </span>
+              <div
+                aria-label="Wind speed units"
+                className="unit-selector"
+                role="group"
+              >
+                {WIND_SPEED_UNITS.map((unit) => (
+                  <button
+                    aria-pressed={speedUnit === unit.value}
+                    className={
+                      speedUnit === unit.value ? "unit-selector__active" : ""
+                    }
+                    key={unit.value}
+                    onClick={() => onSpeedUnitChange(unit.value)}
+                    type="button"
+                  >
+                    {unit.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="speed-card__value">
+              {windSpeed === null ? (
+                <span className="speed-placeholder">—</span>
+              ) : (
+                windSpeed
+              )}
+              <span className="speed-card__unit">
+                {getWindSpeedUnitLabel(speedUnit)}
+              </span>
+            </div>
+            <div aria-hidden="true" className="speed-card__decoration">
+              <span />
+              <span />
+              <span />
             </div>
           </div>
-          <div className="speed-card__value">
-            {windSpeed === null ? (
-              <span className="speed-placeholder">—</span>
-            ) : (
-              windSpeed
-            )}
-            <span className="speed-card__unit">
-              {getWindSpeedUnitLabel(speedUnit)}
-            </span>
-          </div>
-          <div aria-hidden="true" className="speed-card__decoration">
-            <span />
-            <span />
-            <span />
-          </div>
-        </div>
 
-        <div className="direction-row">
-          <div className="direction-icon">
-            <span
-              className="direction-icon__arrow"
-              style={{
-                transform: `translate(-50%, -50%) rotate(${(primaryWind?.direction ?? 0) + 180}deg)`,
-              }}
-            >
-              ↑
-            </span>
-            <span className="direction-icon__north">N</span>
+          <div className="direction-row">
+            <div className="direction-icon">
+              <span
+                className="direction-icon__arrow"
+                style={{
+                  transform: `translate(-50%, -50%) rotate(${(primaryWind?.direction ?? 0) + 180}deg)`,
+                }}
+              >
+                ↑
+              </span>
+              <span className="direction-icon__north">N</span>
+            </div>
+            <div className="direction-copy">
+              <span className="direction-copy__label">WIND DIRECTION</span>
+              <strong>{windDirection}</strong>
+              <span>
+                {primaryWind
+                  ? `${Math.round(primaryWind.direction)}° · from ${windDirection}`
+                  : "Waiting for readings"}
+              </span>
+            </div>
+            <Icon className="direction-row__wind" name="wind" />
           </div>
-          <div className="direction-copy">
-            <span className="direction-copy__label">WIND DIRECTION</span>
-            <strong>{windDirection}</strong>
+
+          <div className="data-timestamp">
+            <Icon name={windStatus === "error" ? "refresh" : "wind"} />
             <span>
-              {primaryWind
-                ? `${Math.round(primaryWind.direction)}° · from ${windDirection}`
-                : "Waiting for readings"}
+              {windStatus === "error"
+                ? "Could not reach the weather service"
+                : formatTime(windField?.observedAt)}
             </span>
           </div>
-          <Icon className="direction-row__wind" name="wind" />
-        </div>
+        </section>
 
-        <div className="data-timestamp">
-          <Icon name={windStatus === "error" ? "refresh" : "wind"} />
+        <section className="animation-section">
+          <div className="section-label">
+            <span>MAP OVERLAY</span>
+            <span className="overlay-tag">PARTICLES</span>
+          </div>
+          <div className="overlay-row">
+            <div className="overlay-row__icon">
+              <Icon name="wind" />
+            </div>
+            <div className="overlay-row__copy">
+              <strong>Wind flow</strong>
+              <span>Animated surface winds</span>
+            </div>
+            <button
+              aria-label={
+                isPlaying ? "Pause wind animation" : "Play wind animation"
+              }
+              aria-pressed={isPlaying}
+              className={`play-toggle${isPlaying ? " play-toggle--active" : ""}`}
+              onClick={() => onPlaybackChange(!isPlaying)}
+              type="button"
+            >
+              <Icon name={isPlaying ? "pause" : "play"} />
+            </button>
+          </div>
+          <div className="pointer-setting">
+            <div className="pointer-setting__copy">
+              <strong>Pointer speed</strong>
+              <span>Show nearest reading on hover</span>
+            </div>
+            <button
+              aria-checked={showPointerSpeed}
+              aria-label="Show wind speed beside pointer"
+              className={`setting-switch${showPointerSpeed ? " setting-switch--on" : ""}`}
+              onClick={() => onPointerSpeedChange(!showPointerSpeed)}
+              role="switch"
+              type="button"
+            >
+              <span />
+            </button>
+          </div>
+        </section>
+
+        <div className="sidebar-footer">
+          <span className="footer-symbol">◎</span>
           <span>
-            {windStatus === "error"
-              ? "Could not reach the weather service"
-              : formatTime(windField?.observedAt)}
+            WIND DATA BY{" "}
+            <a href="https://open-meteo.com/" rel="noreferrer" target="_blank">
+              OPEN-METEO
+            </a>
           </span>
         </div>
-      </section>
-
-      <section className="animation-section">
-        <div className="section-label">
-          <span>MAP OVERLAY</span>
-          <span className="overlay-tag">PARTICLES</span>
-        </div>
-        <div className="overlay-row">
-          <div className="overlay-row__icon">
-            <Icon name="wind" />
-          </div>
-          <div className="overlay-row__copy">
-            <strong>Wind flow</strong>
-            <span>Animated surface winds</span>
-          </div>
-          <button
-            aria-label={isPlaying ? "Pause wind animation" : "Play wind animation"}
-            aria-pressed={isPlaying}
-            className={`play-toggle${isPlaying ? " play-toggle--active" : ""}`}
-            onClick={() => onPlaybackChange(!isPlaying)}
-            type="button"
-          >
-            <Icon name={isPlaying ? "pause" : "play"} />
-          </button>
-        </div>
-        <div className="pointer-setting">
-          <div className="pointer-setting__copy">
-            <strong>Pointer speed</strong>
-            <span>Show nearest reading on hover</span>
-          </div>
-          <button
-            aria-checked={showPointerSpeed}
-            aria-label="Show wind speed beside pointer"
-            className={`setting-switch${showPointerSpeed ? " setting-switch--on" : ""}`}
-            onClick={() => onPointerSpeedChange(!showPointerSpeed)}
-            role="switch"
-            type="button"
-          >
-            <span />
-          </button>
-        </div>
-      </section>
-
-      <div className="sidebar-footer">
-        <span className="footer-symbol">◎</span>
-        <span>
-          WIND DATA BY{" "}
-          <a href="https://open-meteo.com/" rel="noreferrer" target="_blank">
-            OPEN-METEO
-          </a>
-        </span>
       </div>
     </aside>
   );

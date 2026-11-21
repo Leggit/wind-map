@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Map as MapLibreMap, type MapMouseEvent } from "maplibre-gl";
 import type { WindField } from "../data/wind";
+import { getWindDirection } from "../data/wind-directions";
 import {
   formatWindSpeed,
   getWindSpeedLegend,
@@ -30,11 +31,12 @@ interface PointerReading {
   x: number;
   y: number;
   speed: number;
+  direction: number;
   field: WindField;
 }
 
-const POINTER_CARD_WIDTH = 124;
-const POINTER_CARD_HEIGHT = 54;
+const POINTER_CARD_WIDTH = 136;
+const POINTER_CARD_HEIGHT = 68;
 
 const MAP_STYLE = {
   version: 8 as const,
@@ -101,6 +103,7 @@ export function WindMap({
       minZoom: 2,
       maxZoom: 12,
       renderWorldCopies: true,
+      attributionControl: { compact: true },
     });
     mapRef.current = instance;
 
@@ -187,6 +190,7 @@ export function WindMap({
     const updatePointerReading = (event: MapMouseEvent) => {
       const centerLongitude = map.getCenter().lng;
       let nearestSpeed = 0;
+      let nearestDirection = 0;
       let nearestDistance = Number.POSITIVE_INFINITY;
 
       for (const sample of field.samples) {
@@ -199,6 +203,7 @@ export function WindMap({
         if (distance < nearestDistance) {
           nearestDistance = distance;
           nearestSpeed = sample.speed;
+          nearestDirection = sample.direction;
         }
       }
 
@@ -220,6 +225,7 @@ export function WindMap({
         x: left,
         y: top,
         speed: nearestSpeed,
+        direction: nearestDirection,
         field,
       });
     };
@@ -254,6 +260,14 @@ export function WindMap({
     onThemeChange(nextIsDarkMode);
   };
   const legendValues = getWindSpeedLegend(speedUnit);
+  const pointerDirectionDegrees =
+    pointerReading && Number.isFinite(pointerReading.direction)
+      ? pointerReading.direction
+      : null;
+  const pointerDirection =
+    pointerDirectionDegrees === null
+      ? null
+      : getWindDirection(pointerDirectionDegrees);
 
   return (
     <section
@@ -269,7 +283,7 @@ export function WindMap({
       />
       {showPointerSpeed && field && pointerReading?.field === field && (
         <div
-          aria-label={`Wind speed ${formatWindSpeed(pointerReading.speed, speedUnit)} ${getWindSpeedUnitLabel(speedUnit)}`}
+          aria-label={`Wind speed ${formatWindSpeed(pointerReading.speed, speedUnit)} ${getWindSpeedUnitLabel(speedUnit)}${pointerDirection === null ? ", direction unavailable" : `, from ${pointerDirection}`}`}
           className="wind-pointer-card"
           style={{ left: pointerReading.x, top: pointerReading.y }}
         >
@@ -278,6 +292,24 @@ export function WindMap({
             {formatWindSpeed(pointerReading.speed, speedUnit)}
             <small>{getWindSpeedUnitLabel(speedUnit)}</small>
           </strong>
+          <span className="wind-pointer-card__direction">
+            {pointerDirection === null ? (
+              "Direction unavailable"
+            ) : (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="wind-pointer-card__arrow"
+                  style={{
+                    transform: `rotate(${pointerReading.direction + 180}deg)`,
+                  }}
+                >
+                  ↑
+                </span>
+                from {pointerDirection}
+              </>
+            )}
+          </span>
         </div>
       )}
 
