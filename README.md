@@ -1,5 +1,12 @@
 # React + TypeScript + Vite
 
+## Deploying to GitHub Pages
+
+The GitHub Actions workflow builds and deploys the app to GitHub Pages when
+changes are pushed to `main`. In the repository settings, set **Pages → Build
+and deployment → Source** to **GitHub Actions**. The app will then be available
+at `https://leggit.github.io/wind-map/`.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
