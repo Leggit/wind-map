@@ -21,6 +21,7 @@ function App() {
   const [showPointerSpeed, setShowPointerSpeed] = useState(true);
   const [speedUnit, setSpeedUnit] = useState<WindSpeedUnit>("kmh");
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [forecastIndex, setForecastIndex] = useState(0);
 
   const handleWindUpdate = useCallback(
     (status: "loading" | "ready" | "error", field: WindField | null) => {
@@ -39,10 +40,12 @@ function App() {
         isPlaying={isPlaying}
         showPointerSpeed={showPointerSpeed}
         speedUnit={speedUnit}
+        forecastIndex={forecastIndex}
         onLocationChange={setLocation}
         onPlaybackChange={setIsPlaying}
         onPointerSpeedChange={setShowPointerSpeed}
         onSpeedUnitChange={setSpeedUnit}
+        onForecastIndexChange={setForecastIndex}
       />
       <WindMap
         location={location}
@@ -50,6 +53,7 @@ function App() {
         showPointerSpeed={showPointerSpeed}
         isDarkMode={isDarkMode}
         speedUnit={speedUnit}
+        forecastIndex={forecastIndex}
         onThemeChange={setIsDarkMode}
         onWindUpdate={handleWindUpdate}
       />

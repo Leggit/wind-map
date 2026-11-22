@@ -21,18 +21,25 @@ export interface WindField {
   isStale: boolean;
 }
 
-interface OpenMeteoLocation {
-  current?: {
-    time?: unknown;
-    wind_speed_10m?: unknown;
-    wind_direction_10m?: unknown;
-  };
+interface OpenMeteoHourly {
+  time?: unknown;
+  wind_speed_10m?: unknown;
+  wind_direction_10m?: unknown;
 }
 
-interface CachedReading {
-  sample: WindSample;
-  cachedAt: number;
+interface OpenMeteoLocation {
+  hourly?: OpenMeteoHourly;
+}
+
+interface ForecastReading {
   observedAt: string;
+  speed: number;
+  direction: number;
+}
+
+interface CachedForecast {
+  readings: ForecastReading[];
+  cachedAt: number;
 }
 
 interface WindGrid {
@@ -40,12 +47,21 @@ interface WindGrid {
   step: number;
 }
 
-const STORAGE_KEY = "zephyr.wind-cache.v1";
-const CACHE_TTL_MS = 15 * 60 * 1000;
-const MAX_CACHE_ENTRIES = 600;
+export const FORECAST_HOURLY_HOURS = 24;
+export const FORECAST_HORIZON_HOURS = 7 * 24;
+export const FORECAST_STEP_HOURS = 3;
+export const FORECAST_TIME_COUNT =
+  FORECAST_HOURLY_HOURS +
+  (FORECAST_HORIZON_HOURS - FORECAST_HOURLY_HOURS) /
+    FORECAST_STEP_HOURS +
+  1;
+
+const STORAGE_KEY = "zephyr.wind-cache.v3";
+const CACHE_TTL_MS = 60 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 300;
 const CACHE_GRID_POINTS_PER_SIDE = 6;
 
-const memoryCache = new Map<string, CachedReading>();
+const memoryCache = new Map<string, CachedForecast>();
 let cacheLoaded = false;
 let rateLimitedUntil = 0;
 
@@ -65,37 +81,33 @@ function getGridId(points: Array<[number, number]>): string {
   return `grid-${(hash >>> 0).toString(36)}`;
 }
 
-function isWindSample(value: unknown): value is WindSample {
+function isForecastReading(value: unknown): value is ForecastReading {
   if (typeof value !== "object" || value === null) {
     return false;
   }
   return (
-    "latitude" in value &&
-    typeof value.latitude === "number" &&
-    "longitude" in value &&
-    typeof value.longitude === "number" &&
+    "observedAt" in value &&
+    typeof value.observedAt === "string" &&
     "speed" in value &&
     typeof value.speed === "number" &&
+    Number.isFinite(value.speed) &&
     "direction" in value &&
     typeof value.direction === "number" &&
-    "east" in value &&
-    typeof value.east === "number" &&
-    "north" in value &&
-    typeof value.north === "number"
+    Number.isFinite(value.direction)
   );
 }
 
-function isCachedReading(value: unknown): value is CachedReading {
+function isCachedForecast(value: unknown): value is CachedForecast {
   if (typeof value !== "object" || value === null) {
     return false;
   }
   return (
-    "sample" in value &&
-    isWindSample(value.sample) &&
+    "readings" in value &&
+    Array.isArray(value.readings) &&
+    value.readings.every(isForecastReading) &&
     "cachedAt" in value &&
     typeof value.cachedAt === "number" &&
-    "observedAt" in value &&
-    typeof value.observedAt === "string"
+    Number.isFinite(value.cachedAt)
   );
 }
 
@@ -125,7 +137,7 @@ function loadCache(): void {
     }
 
     for (const [key, value] of Object.entries(parsed)) {
-      if (isCachedReading(value)) {
+      if (isCachedForecast(value)) {
         memoryCache.set(key, value);
       }
     }
@@ -212,9 +224,40 @@ function isOpenMeteoLocation(value: unknown): value is OpenMeteoLocation {
   return (
     typeof value === "object" &&
     value !== null &&
-    "current" in value &&
-    typeof value.current === "object" &&
-    value.current !== null
+    "hourly" in value &&
+    typeof value.hourly === "object" &&
+    value.hourly !== null
+  );
+}
+
+function getForecastHourOffset(forecastIndex: number): number {
+  if (
+    !Number.isInteger(forecastIndex) ||
+    forecastIndex < 0 ||
+    forecastIndex >= FORECAST_TIME_COUNT
+  ) {
+    throw new RangeError("The selected forecast time is outside the 7-day range.");
+  }
+  return forecastIndex < FORECAST_HOURLY_HOURS
+    ? forecastIndex
+    : FORECAST_HOURLY_HOURS +
+        (forecastIndex - FORECAST_HOURLY_HOURS) * FORECAST_STEP_HOURS;
+}
+
+function formatForecastTime(hourOffset: number, now: number): string {
+  const currentHour = Math.floor(now / 3_600_000) * 3_600_000;
+  return new Date(currentHour + hourOffset * 3_600_000)
+    .toISOString()
+    .slice(0, 16);
+}
+
+export function getForecastTime(forecastIndex: number): string {
+  return formatForecastTime(getForecastHourOffset(forecastIndex), Date.now());
+}
+
+function getForecastTimes(now: number): string[] {
+  return Array.from({ length: FORECAST_TIME_COUNT }, (_, forecastIndex) =>
+    formatForecastTime(getForecastHourOffset(forecastIndex), now),
   );
 }
 
@@ -237,11 +280,13 @@ async function fetchReadings(
   points: Array<[number, number]>,
   signal: AbortSignal,
   gridId: string,
+  requestedForecastTimes: ReadonlySet<string>,
 ): Promise<void> {
   const params = new URLSearchParams({
     latitude: points.map(([latitude]) => latitude.toFixed(3)).join(","),
     longitude: points.map(([, longitude]) => longitude.toFixed(3)).join(","),
-    current: "wind_speed_10m,wind_direction_10m",
+    hourly: "wind_speed_10m,wind_direction_10m",
+    forecast_hours: String(FORECAST_HORIZON_HOURS + 1),
     wind_speed_unit: "kmh",
     timezone: "GMT",
   });
@@ -296,43 +341,70 @@ async function fetchReadings(
   }
 
   const cachedAt = Date.now();
+  const forecasts: Array<[string, CachedForecast]> = [];
   for (let index = 0; index < locations.length; index += 1) {
     const location = locations[index];
-    const speed = location.current?.wind_speed_10m;
-    const direction = location.current?.wind_direction_10m;
+    const times = location.hourly?.time;
+    const speeds = location.hourly?.wind_speed_10m;
+    const directions = location.hourly?.wind_direction_10m;
     if (
-      typeof speed !== "number" ||
-      typeof direction !== "number" ||
-      !Number.isFinite(speed) ||
-      !Number.isFinite(direction)
+      !Array.isArray(times) ||
+      !Array.isArray(speeds) ||
+      !Array.isArray(directions) ||
+      times.length === 0 ||
+      times.length !== speeds.length ||
+      times.length !== directions.length
     ) {
-      throw new Error("The weather service returned an invalid wind reading.");
+      throw new Error("The weather service returned an invalid wind forecast.");
     }
 
     const [latitude, longitude] = points[index];
-    const radians = (direction * Math.PI) / 180;
-    const sample: WindSample = {
-      latitude,
-      longitude,
-      speed,
-      direction,
-      east: -Math.sin(radians) * speed,
-      north: -Math.cos(radians) * speed,
-    };
-    memoryCache.set(coordinateKey(latitude, longitude), {
-      sample,
-      cachedAt,
-      observedAt:
-        typeof location.current?.time === "string"
-          ? location.current.time
-          : new Date().toISOString(),
-    });
+    const readings: ForecastReading[] = [];
+    for (let readingIndex = 0; readingIndex < times.length; readingIndex += 1) {
+      const time = times[readingIndex];
+      if (typeof time !== "string") {
+        throw new Error("The weather service returned an invalid forecast time.");
+      }
+      if (!requestedForecastTimes.has(time)) {
+        continue;
+      }
+
+      const speed = speeds[readingIndex];
+      const direction = directions[readingIndex];
+      if (
+        typeof speed !== "number" ||
+        typeof direction !== "number" ||
+        !Number.isFinite(speed) ||
+        !Number.isFinite(direction)
+      ) {
+        throw new Error(
+          "The weather service returned an invalid wind forecast reading.",
+        );
+      }
+      readings.push({ observedAt: time, speed, direction });
+    }
+    if (
+      readings.length !== requestedForecastTimes.size ||
+      [...requestedForecastTimes].some(
+        (time) => !readings.some((reading) => reading.observedAt === time),
+      )
+    ) {
+      throw new Error("The weather service returned an incomplete forecast horizon.");
+    }
+    forecasts.push([
+      coordinateKey(latitude, longitude),
+      { readings, cachedAt },
+    ]);
+  }
+
+  for (const [key, forecast] of forecasts) {
+    memoryCache.set(key, forecast);
   }
 
   saveCache();
   console.info("[wind-cache] readings cached", {
     gridId,
-    savedPoints: locations.length,
+    savedPoints: forecasts.length,
     totalEntries: memoryCache.size,
   });
 }
@@ -340,18 +412,37 @@ async function fetchReadings(
 function createField(
   points: Array<[number, number]>,
   bounds: GeographicBounds,
+  forecastTime: string,
 ): WindField {
-  const readings = points.map(([latitude, longitude]) =>
-    memoryCache.get(coordinateKey(latitude, longitude)),
-  );
+  const readings = points.map(([latitude, longitude]) => {
+    const forecast = memoryCache.get(coordinateKey(latitude, longitude));
+    const reading = forecast?.readings.find(
+      (candidate) => candidate.observedAt === forecastTime,
+    );
+    return forecast && reading
+      ? { ...reading, cachedAt: forecast.cachedAt }
+      : undefined;
+  });
   const availableReadings = readings.filter(
-    (reading): reading is CachedReading => reading !== undefined,
+    (reading): reading is ForecastReading & { cachedAt: number } =>
+      reading !== undefined,
   );
   if (availableReadings.length !== points.length) {
-    throw new Error("Wind readings are not available for this map area.");
+    throw new Error("Wind forecasts are not available for this map area.");
   }
 
-  const samples = availableReadings.map((reading) => reading.sample);
+  const samples = points.map(([latitude, longitude], index) => {
+    const reading = availableReadings[index];
+    const radians = (reading.direction * Math.PI) / 180;
+    return {
+      latitude,
+      longitude,
+      speed: reading.speed,
+      direction: reading.direction,
+      east: -Math.sin(radians) * reading.speed,
+      north: -Math.cos(radians) * reading.speed,
+    };
+  });
   const centerLatitude = (bounds.south + bounds.north) / 2;
   const centerLongitude = (bounds.west + bounds.east) / 2;
   const centerSample = samples.reduce((nearest, sample) => {
@@ -368,14 +459,10 @@ function createField(
       nearestLongitudeDifference ** 2;
     return distance < nearestDistance ? sample : nearest;
   });
-  const observedAt =
-    availableReadings.find((reading) => reading.observedAt)?.observedAt ??
-    new Date().toISOString();
-
   return {
     samples,
     centerSample,
-    observedAt,
+    observedAt: forecastTime,
     isStale: availableReadings.some(
       (reading) => Date.now() - reading.cachedAt >= CACHE_TTL_MS,
     ),
@@ -384,28 +471,53 @@ function createField(
 
 export async function fetchWindField(
   bounds: GeographicBounds,
+  forecastIndex: number,
   signal: AbortSignal,
 ): Promise<WindField> {
   loadCache();
+  const forecastTimes = getForecastTimes(Date.now());
+  const forecastTime = forecastTimes[forecastIndex];
+  if (forecastTime === undefined) {
+    throw new RangeError("The selected forecast time is outside the 7-day range.");
+  }
   const grid = createGrid(bounds);
   const { points } = grid;
   const gridId = getGridId(points);
   const now = Date.now();
   const freshHits = points.filter((point) => {
-    const reading = memoryCache.get(coordinateKey(point[0], point[1]));
-    return reading !== undefined && now - reading.cachedAt < CACHE_TTL_MS;
+    const forecast = memoryCache.get(coordinateKey(point[0], point[1]));
+    const reading = forecast?.readings.find(
+      (candidate) => candidate.observedAt === forecastTime,
+    );
+    return (
+      forecast !== undefined &&
+      reading !== undefined &&
+      now - forecast.cachedAt < CACHE_TTL_MS
+    );
   }).length;
   const staleHits = points.filter((point) => {
-    const reading = memoryCache.get(coordinateKey(point[0], point[1]));
-    return reading !== undefined && now - reading.cachedAt >= CACHE_TTL_MS;
+    const forecast = memoryCache.get(coordinateKey(point[0], point[1]));
+    return (
+      forecast?.readings.some(
+        (candidate) => candidate.observedAt === forecastTime,
+      ) === true &&
+      now - forecast.cachedAt >= CACHE_TTL_MS
+    );
   }).length;
   const missingPoints = points.filter((point) => {
-    const reading = memoryCache.get(coordinateKey(point[0], point[1]));
-    return !reading || now - reading.cachedAt >= CACHE_TTL_MS;
+    const forecast = memoryCache.get(coordinateKey(point[0], point[1]));
+    return (
+      forecast === undefined ||
+      !forecast.readings.some(
+        (candidate) => candidate.observedAt === forecastTime,
+      ) ||
+      now - forecast.cachedAt >= CACHE_TTL_MS
+    );
   });
 
   console.info("[wind-cache] grid lookup", {
     gridId,
+    forecastTime,
     stepDegrees: grid.step,
     points: points.length,
     freshHits,
@@ -421,19 +533,27 @@ export async function fetchWindField(
         gridId,
         missingPoints: missingPoints.length,
       });
-      return createField(points, bounds);
+      return createField(points, bounds, forecastTime);
     }
 
     try {
-      await fetchReadings(missingPoints, signal, gridId);
+      await fetchReadings(
+        missingPoints,
+        signal,
+        gridId,
+        new Set(forecastTimes),
+      );
     } catch (error) {
       if (signal.aborted) {
         console.info("[wind-cache] lookup cancelled", { gridId });
         throw error;
       }
-      const hasCachedGrid = points.every((point) =>
-        memoryCache.has(coordinateKey(point[0], point[1])),
-      );
+      const hasCachedGrid = points.every((point) => {
+        const forecast = memoryCache.get(coordinateKey(point[0], point[1]));
+        return forecast?.readings.some(
+          (candidate) => candidate.observedAt === forecastTime,
+        );
+      });
       if (!hasCachedGrid) {
         throw error;
       }
@@ -444,5 +564,5 @@ export async function fetchWindField(
     }
   }
 
-  return createField(points, bounds);
+  return createField(points, bounds, forecastTime);
 }

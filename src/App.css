@@ -46,44 +46,11 @@
   display: none;
 }
 
-.brand {
-  display: flex;
-  min-height: 42px;
-  align-items: center;
-  padding-bottom: 23px;
-  border-bottom: 1px solid #e9efec;
-}
-
-.brand__mark {
-  display: grid;
-  width: 37px;
-  height: 37px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 12px;
-  color: #f3fbf8;
-  background: #1d4943;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
-}
-
-.brand__mark svg {
-  width: 21px;
-  height: 21px;
-}
-
 .brand__name {
   color: #193d38;
   font-size: 19px;
   font-weight: 720;
   letter-spacing: -0.75px;
-}
-
-.brand__tag {
-  margin: 3px 0 0 auto;
-  color: #91a29c;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 1px;
 }
 
 .location-search {
@@ -459,6 +426,41 @@
 .animation-section {
   padding: 20px 0;
   border-bottom: 1px solid #e9efec;
+}
+
+.forecast-control {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 17px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #edf1ef;
+}
+
+.forecast-control__time {
+  color: #426d61;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.forecast-control input[type="range"] {
+  width: 100%;
+  margin: 2px 0 0;
+  accent-color: #398276;
+  cursor: pointer;
+}
+
+.forecast-control__range {
+  display: flex;
+  justify-content: space-between;
+  color: #91a099;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.forecast-control__hint {
+  color: #91a099;
+  font-size: 9px;
 }
 
 .overlay-tag {
@@ -896,7 +898,8 @@
 
 .app-shell--dark .brand,
 .app-shell--dark .conditions,
-.app-shell--dark .animation-section {
+.app-shell--dark .animation-section,
+.app-shell--dark .forecast-control {
   border-color: #334246;
 }
 
@@ -911,6 +914,8 @@
 .app-shell--dark .direction-copy__label,
 .app-shell--dark .direction-copy > span:last-child,
 .app-shell--dark .data-timestamp,
+.app-shell--dark .forecast-control__range,
+.app-shell--dark .forecast-control__hint,
 .app-shell--dark .overlay-row__copy span,
 .app-shell--dark .pointer-setting__copy span,
 .app-shell--dark .sidebar-footer {
@@ -1001,7 +1006,8 @@
 }
 
 .app-shell--dark .overlay-row__copy strong,
-.app-shell--dark .pointer-setting__copy strong {
+.app-shell--dark .pointer-setting__copy strong,
+.app-shell--dark .forecast-control__time {
   color: #c4d5cf;
 }
 

@@ -1,5 +1,11 @@
 import { useState, type FormEvent } from "react";
-import type { WindField } from "../data/wind";
+import {
+  FORECAST_HOURLY_HOURS,
+  FORECAST_STEP_HOURS,
+  FORECAST_TIME_COUNT,
+  getForecastTime,
+  type WindField,
+} from "../data/wind";
 import {
   formatWindSpeed,
   getWindSpeedUnitLabel,
@@ -17,24 +23,20 @@ interface WindSidebarProps {
   isPlaying: boolean;
   showPointerSpeed: boolean;
   speedUnit: WindSpeedUnit;
+  forecastIndex: number;
   onLocationChange: (location: MapLocation) => void;
   onPlaybackChange: (isPlaying: boolean) => void;
   onPointerSpeedChange: (show: boolean) => void;
   onSpeedUnitChange: (unit: WindSpeedUnit) => void;
+  onForecastIndexChange: (index: number) => void;
 }
 
-function formatTime(value: string | undefined): string {
-  if (!value) {
-    return "Updated just now";
-  }
+function formatForecastTime(value: string): string {
   const timestamp = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`;
-  const date = new Date(timestamp);
-  return `Updated ${new Intl.DateTimeFormat("en", {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
     hour: "numeric",
-    minute: "2-digit",
-    timeZone: "UTC",
-    timeZoneName: "short",
-  }).format(date)}`;
+  }).format(new Date(timestamp));
 }
 
 export function WindSidebar({
@@ -44,10 +46,12 @@ export function WindSidebar({
   isPlaying,
   showPointerSpeed,
   speedUnit,
+  forecastIndex,
   onLocationChange,
   onPlaybackChange,
   onPointerSpeedChange,
   onSpeedUnitChange,
+  onForecastIndexChange,
 }: WindSidebarProps) {
   const [query, setQuery] = useState("");
   const [isMobileExpanded, setIsMobileExpanded] = useState(false);
@@ -108,6 +112,7 @@ export function WindSidebar({
   const windDirection = primaryWind
     ? getWindDirection(primaryWind.direction)
     : "—";
+  const forecastTime = formatForecastTime(getForecastTime(forecastIndex));
 
   return (
     <aside
@@ -116,19 +121,6 @@ export function WindSidebar({
     >
       <header className="brand">
         <span className="brand__name">Wind map</span>
-        <span
-          className={`status-pill status-pill--${windStatus}`}
-          role="status"
-        >
-          <span className="status-pill__dot" />
-          {windStatus === "loading"
-            ? "LOADING"
-            : windStatus === "error"
-              ? "OFFLINE"
-              : windField?.isStale
-                ? "CACHED"
-                : "LIVE"}
-        </span>
         <button
           aria-controls="wind-sidebar-content"
           aria-expanded={isMobileExpanded}
@@ -241,12 +233,40 @@ export function WindSidebar({
             <span>
               {windStatus === "error"
                 ? "Could not reach the weather service"
-                : formatTime(windField?.observedAt)}
+                : windField
+                  ? `Forecast for ${formatForecastTime(windField.observedAt)}`
+                  : "Loading wind forecast"}
             </span>
           </div>
         </section>
 
         <section className="animation-section">
+          <div className="forecast-control">
+            <div className="section-label">
+              <label htmlFor="forecast-time">FORECAST TIME</label>
+              <span className="forecast-control__time">{forecastTime}</span>
+            </div>
+            <input
+              aria-label="Forecast time"
+              aria-valuetext={forecastTime}
+              id="forecast-time"
+              max={FORECAST_TIME_COUNT - 1}
+              min={0}
+              onChange={(event) =>
+                onForecastIndexChange(event.currentTarget.valueAsNumber)
+              }
+              type="range"
+              value={forecastIndex}
+            />
+            <div aria-hidden="true" className="forecast-control__range">
+              <span>Now</span>
+              <span>+7d</span>
+            </div>
+            <span className="forecast-control__hint">
+              Hourly for {FORECAST_HOURLY_HOURS}h, then every{" "}
+              {FORECAST_STEP_HOURS}h · local time
+            </span>
+          </div>
           <div className="section-label">
             <span>MAP OVERLAY</span>
             <span className="overlay-tag">PARTICLES</span>

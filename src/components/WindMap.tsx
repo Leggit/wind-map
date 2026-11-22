@@ -20,6 +20,7 @@ interface WindMapProps {
   showPointerSpeed: boolean;
   isDarkMode: boolean;
   speedUnit: WindSpeedUnit;
+  forecastIndex: number;
   onThemeChange: (isDarkMode: boolean) => void;
   onWindUpdate: (
     status: "loading" | "ready" | "error",
@@ -77,6 +78,7 @@ export function WindMap({
   showPointerSpeed,
   isDarkMode,
   speedUnit,
+  forecastIndex,
   onThemeChange,
   onWindUpdate,
 }: WindMapProps) {
@@ -137,7 +139,7 @@ export function WindMap({
       requestRef.current = controller;
       onWindUpdate("loading", null);
 
-      fetchWindField(getVisibleBounds(map), controller.signal)
+      fetchWindField(getVisibleBounds(map), forecastIndex, controller.signal)
         .then((nextField) => {
           setField(nextField);
           onWindUpdate("ready", nextField);
@@ -159,7 +161,7 @@ export function WindMap({
     const handleLoad = () => {
       if (!hasLoaded) {
         hasLoaded = true;
-        refreshWind();
+        timer = window.setTimeout(refreshWind, 300);
       }
     };
     const updateCenter = () => {
@@ -176,11 +178,12 @@ export function WindMap({
 
     return () => {
       window.clearTimeout(timer);
+      requestRef.current?.abort();
       map.off("load", handleLoad);
       map.off("moveend", scheduleRefresh);
       map.off("moveend", updateCenter);
     };
-  }, [map, onWindUpdate]);
+  }, [forecastIndex, map, onWindUpdate]);
 
   useEffect(() => {
     if (!map || !field || !showPointerSpeed) {
