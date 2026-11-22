@@ -17,7 +17,6 @@ import type { MapLocation } from "../types";
 import { Icon } from "./Icon";
 
 interface WindSidebarProps {
-  location: MapLocation;
   windField: WindField | null;
   windStatus: "loading" | "ready" | "error";
   isPlaying: boolean;
@@ -40,7 +39,6 @@ function formatForecastTime(value: string): string {
 }
 
 export function WindSidebar({
-  location,
   windField,
   windStatus,
   isPlaying,

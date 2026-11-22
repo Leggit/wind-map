@@ -173,7 +173,6 @@ export function WindMap({
   const mapRef = useRef<MapLibreMap | null>(null);
   const [map, setMap] = useState<MapLibreMap | null>(null);
   const [field, setField] = useState<WindField | null>(null);
-  const [mapCenter, setMapCenter] = useState(location.coordinates);
   const [pointerReading, setPointerReading] = useState<PointerReading | null>(
     null,
   );
@@ -261,14 +260,8 @@ export function WindMap({
         timer = window.setTimeout(refreshWind, 300);
       }
     };
-    const updateCenter = () => {
-      const center = map.getCenter();
-      setMapCenter([center.lng, center.lat]);
-    };
-
     map.on("load", handleLoad);
     map.on("moveend", scheduleRefresh);
-    map.on("moveend", updateCenter);
     if (map.loaded()) {
       handleLoad();
     }
@@ -278,7 +271,6 @@ export function WindMap({
       requestRef.current?.abort();
       map.off("load", handleLoad);
       map.off("moveend", scheduleRefresh);
-      map.off("moveend", updateCenter);
     };
   }, [forecastIndex, map, onWindUpdate]);
 

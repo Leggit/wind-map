@@ -34,7 +34,6 @@ function App() {
   return (
     <main className={`app-shell${isDarkMode ? " app-shell--dark" : ""}`}>
       <WindSidebar
-        location={location}
         windField={windField}
         windStatus={windStatus}
         isPlaying={isPlaying}
