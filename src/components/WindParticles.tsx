@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Map as MapLibreMap } from "maplibre-gl";
-import type { WindField, WindSample } from "../data/wind";
+import { interpolateWind, type WindField } from "../data/wind";
 import { DARK_WIND_SPEED_COLORS } from "../data/wind-colors";
 
 interface WindParticlesProps {
@@ -22,22 +22,16 @@ interface Particle {
   speed: number;
 }
 
-interface ProjectedSample {
-  x: number;
-  y: number;
-  sample: WindSample;
-}
-
 interface ParticleSettings {
   count: number;
   sizeFactor: number;
 }
 
-const WIND_INTERPOLATION_NEIGHBORS = 4;
 const PARTICLE_MIN_LIFETIME = 480;
 const PARTICLE_LIFETIME_VARIATION = 360;
 const PARTICLE_FADE_IN = 24;
 const PARTICLE_FADE_OUT = 60;
+const WIND_DIRECTION_PROJECTION_STEP = 0.0001;
 
 function getParticleSettings(screenWidth: number): ParticleSettings {
   if (screenWidth <= 760) {
@@ -159,61 +153,17 @@ function createProgram(gl: WebGLRenderingContext): WebGLProgram {
   return program;
 }
 
-function interpolateWind(
-  x: number,
-  y: number,
-  samples: ProjectedSample[],
-): Pick<WindSample, "east" | "north" | "speed"> | undefined {
-  const nearest: ProjectedSample[] = [];
-  const distances: number[] = [];
-
-  for (const projected of samples) {
-    const distance = (projected.x - x) ** 2 + (projected.y - y) ** 2;
-    if (distance === 0) {
-      return projected.sample;
-    }
-
-    let index = 0;
-    while (index < distances.length && distances[index] <= distance) {
-      index += 1;
-    }
-    if (index < WIND_INTERPOLATION_NEIGHBORS) {
-      nearest.splice(index, 0, projected);
-      distances.splice(index, 0, distance);
-      if (nearest.length > WIND_INTERPOLATION_NEIGHBORS) {
-        nearest.pop();
-        distances.pop();
-      }
-    }
-  }
-
-  if (nearest.length === 0) {
-    return undefined;
-  }
-
-  let totalWeight = 0;
-  let east = 0;
-  let north = 0;
-  for (let index = 0; index < nearest.length; index += 1) {
-    const weight = 1 / distances[index];
-    totalWeight += weight;
-    east += nearest[index].sample.east * weight;
-    north += nearest[index].sample.north * weight;
-  }
-
-  east /= totalWeight;
-  north /= totalWeight;
-  return { east, north, speed: Math.hypot(east, north) };
-}
-
 function createParticle(
   width: number,
   height: number,
-  samples: ProjectedSample[],
+  samples: WindField["samples"],
+  map: MapLibreMap,
+  pixelRatio: number,
   x = Math.random() * width,
   y = Math.random() * height,
 ): Particle {
-  const wind = interpolateWind(x, y, samples);
+  const point = map.unproject([x / pixelRatio, y / pixelRatio]);
+  const wind = interpolateWind(samples, point.lat, point.lng);
   const maxLife =
     PARTICLE_MIN_LIFETIME + Math.random() * PARTICLE_LIFETIME_VARIATION;
 
@@ -319,7 +269,6 @@ export function WindParticles({
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    let projectedSamples: ProjectedSample[] = [];
     let particles: Particle[] = [];
     let segmentData = new Float32Array(0);
     let particleCount = 0;
@@ -330,6 +279,24 @@ export function WindParticles({
       width: map.getCanvas().clientWidth,
       height: map.getCanvas().clientHeight,
     });
+
+    const updateHorizonMask = () => {
+      const pitch = map.getPitch();
+      if (pitch <= 0) {
+        canvas.style.clipPath = "";
+        return;
+      }
+
+      const { height } = getMapSize();
+      const fieldOfView = (map.getVerticalFieldOfView() * Math.PI) / 180;
+      const cameraDistance = height / (2 * Math.tan(fieldOfView / 2));
+      const horizonY =
+        height / 2 -
+        cameraDistance * Math.tan(((90 - pitch) * Math.PI) / 180);
+
+      canvas.style.clipPath =
+        horizonY > 0 ? `inset(${Math.min(horizonY, height)}px 0 0)` : "";
+    };
 
     const resize = () => {
       const { width, height } = getMapSize();
@@ -345,22 +312,17 @@ export function WindParticles({
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
 
-      projectedSamples = field.samples.map((sample) => {
-        const point = map.project([sample.longitude, sample.latitude]);
-        return {
-          x: point.x * pixelRatio,
-          y: point.y * pixelRatio,
-          sample,
-        };
-      });
       particles = Array.from({ length: particleCount }, () =>
         createParticle(
           width * pixelRatio,
           height * pixelRatio,
-          projectedSamples,
+          field.samples,
+          map,
+          pixelRatio,
         ),
       );
       segmentData = new Float32Array(particles.length * 24);
+      updateHorizonMask();
     };
 
     const animate = () => {
@@ -385,26 +347,53 @@ export function WindParticles({
       for (let index = 0; index < particles.length; index += 1) {
         let particle = particles[index];
         if (isPlayingRef.current) {
-          const wind = interpolateWind(
-            particle.x,
-            particle.y,
-            projectedSamples,
-          );
+          const point = map.unproject([
+            particle.x / pixelRatio,
+            particle.y / pixelRatio,
+          ]);
+          const wind = interpolateWind(field.samples, point.lat, point.lng);
           particle.east = wind?.east ?? 0;
           particle.north = wind?.north ?? 0;
           particle.speed = wind?.speed ?? 0;
           particle.previousX = particle.x;
           particle.previousY = particle.y;
-          particle.x +=
-            (particle.east * bearingCosine -
-              particle.north * bearingSine) *
-            0.035 *
-            pixelRatio;
-          particle.y -=
-            (particle.east * bearingSine +
-              particle.north * bearingCosine) *
-            0.035 *
-            pixelRatio;
+          let movementX =
+            particle.east * bearingCosine - particle.north * bearingSine;
+          let movementY = -(
+            particle.east * bearingSine +
+            particle.north * bearingCosine
+          );
+
+          if (map.getPitch() > 0) {
+            const point = map.unproject([
+              particle.x / pixelRatio,
+              particle.y / pixelRatio,
+            ]);
+            const latitude = Math.max(-85, Math.min(85, point.lat));
+            const longitudeOffset =
+              (particle.east * WIND_DIRECTION_PROJECTION_STEP) /
+              Math.max(Math.cos((latitude * Math.PI) / 180), 0.01);
+            const projectedWind = map.project([
+              point.lng + longitudeOffset,
+              Math.max(
+                -85,
+                Math.min(
+                  85,
+                  latitude + particle.north * WIND_DIRECTION_PROJECTION_STEP,
+                ),
+              ),
+            ]);
+            const projectedX = projectedWind.x - particle.x / pixelRatio;
+            const projectedY = projectedWind.y - particle.y / pixelRatio;
+            const projectedLength = Math.hypot(projectedX, projectedY);
+            if (projectedLength > 0) {
+              movementX = (projectedX / projectedLength) * particle.speed;
+              movementY = (projectedY / projectedLength) * particle.speed;
+            }
+          }
+
+          particle.x += movementX * 0.035 * pixelRatio;
+          particle.y += movementY * 0.035 * pixelRatio;
           particle.life += 1;
 
           if (
@@ -417,7 +406,9 @@ export function WindParticles({
             particle = createParticle(
               canvas.width,
               canvas.height,
-              projectedSamples,
+              field.samples,
+              map,
+              pixelRatio,
             );
             particle.life = 0;
             particles[index] = particle;
@@ -523,7 +514,9 @@ export function WindParticles({
           const respawnedParticle = createParticle(
             canvas.width,
             canvas.height,
-            projectedSamples,
+            field.samples,
+            map,
+            pixelRatio,
             destinationX,
             destinationY,
           );
@@ -647,26 +640,35 @@ export function WindParticles({
     };
 
     const onMapMove = () => {
+      updateHorizonMask();
+    };
+    const resetParticles = () => {
+      const { width, height } = getMapSize();
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-      projectedSamples = field.samples.map((sample) => {
-        const point = map.project([sample.longitude, sample.latitude]);
-        return {
-          x: point.x * pixelRatio,
-          y: point.y * pixelRatio,
-          sample,
-        };
-      });
+      particles = Array.from({ length: particleCount }, () =>
+        createParticle(
+          width * pixelRatio,
+          height * pixelRatio,
+          field.samples,
+          map,
+          pixelRatio,
+        ),
+      );
+      segmentData.fill(0);
     };
 
     resize();
     map.on("move", onMapMove);
+    map.on("moveend", resetParticles);
     map.on("resize", resize);
     animationFrame = window.requestAnimationFrame(animate);
 
     return () => {
       window.cancelAnimationFrame(animationFrame);
       map.off("move", onMapMove);
+      map.off("moveend", resetParticles);
       map.off("resize", resize);
+      canvas.style.clipPath = "";
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.deleteBuffer(buffer);

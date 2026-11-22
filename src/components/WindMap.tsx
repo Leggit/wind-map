@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Map as MapLibreMap, type MapMouseEvent } from "maplibre-gl";
-import type { WindField } from "../data/wind";
+import {
+  Map as MapLibreMap,
+  type GeoJSONSource,
+  type MapMouseEvent,
+} from "maplibre-gl";
+import { interpolateWind, type WindField } from "../data/wind";
 import { getWindDirection } from "../data/wind-directions";
 import {
   formatWindSpeed,
@@ -31,13 +35,95 @@ interface WindMapProps {
 interface PointerReading {
   x: number;
   y: number;
+  latitude: number;
+  longitude: number;
   speed: number;
   direction: number;
   field: WindField;
 }
 
-const POINTER_CARD_WIDTH = 136;
-const POINTER_CARD_HEIGHT = 68;
+type WindGridFeature = {
+  type: "Feature";
+  properties: Record<string, string>;
+  geometry:
+    | { type: "MultiPolygon"; coordinates: [number, number][][][] }
+    | { type: "Point"; coordinates: [number, number] };
+};
+
+const WIND_GRID_SOURCE_ID = "open-meteo-wind-grid";
+const WIND_GRID_FILL_LAYER_ID = "open-meteo-wind-grid-fill";
+const WIND_GRID_LABEL_LAYER_ID = "open-meteo-wind-grid-labels";
+const POINTER_CARD_WIDTH = 152;
+const POINTER_CARD_HEIGHT = 84;
+
+function createWindGridData(field: WindField | null) {
+  const features: WindGridFeature[] = [];
+  if (!field) {
+    return { type: "FeatureCollection" as const, features };
+  }
+
+  const halfStep = field.gridStep / 2;
+  const addRectangle = (
+    polygons: [number, number][][][],
+    west: number,
+    east: number,
+    south: number,
+    north: number,
+  ) => {
+    polygons.push([
+      [
+        [west, south],
+        [east, south],
+        [east, north],
+        [west, north],
+        [west, south],
+      ],
+    ]);
+  };
+
+  for (const sample of field.samples) {
+    const south = Math.max(-85, sample.latitude - halfStep);
+    const north = Math.min(85, sample.latitude + halfStep);
+    const west = sample.longitude - halfStep;
+    const east = sample.longitude + halfStep;
+    const polygons: [number, number][][][] = [];
+
+    if (west < -180) {
+      addRectangle(polygons, west + 360, 180, south, north);
+      addRectangle(polygons, -180, east, south, north);
+    } else if (east > 180) {
+      addRectangle(polygons, west, 180, south, north);
+      addRectangle(polygons, -180, east - 360, south, north);
+    } else {
+      addRectangle(polygons, west, east, south, north);
+    }
+
+    features.push({
+      type: "Feature",
+      properties: { kind: "cell" },
+      geometry: { type: "MultiPolygon", coordinates: polygons },
+    });
+    features.push({
+      type: "Feature",
+      properties: {
+        kind: "label",
+        label: `${formatWindSpeed(sample.speed, "kmh")} km/h\n${getWindDirection(sample.direction)}`,
+      },
+      geometry: {
+        type: "Point",
+        coordinates: [sample.longitude, sample.latitude],
+      },
+    });
+  }
+
+  return { type: "FeatureCollection" as const, features };
+}
+
+function formatPointerCoordinate(latitude: number, longitude: number) {
+  const latitudeDirection = latitude >= 0 ? "N" : "S";
+  const longitudeDirection = longitude >= 0 ? "E" : "W";
+  return `${Math.abs(latitude).toFixed(3)}°${latitudeDirection}, ${Math.abs(longitude).toFixed(3)}°${longitudeDirection}`;
+}
 
 const MAP_STYLE = {
   version: 8 as const,
@@ -46,6 +132,7 @@ const MAP_STYLE = {
       type: "raster" as const,
       tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
       tileSize: 256,
+      maxzoom: 19,
       attribution:
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     },
@@ -55,7 +142,7 @@ const MAP_STYLE = {
       id: "openstreetmap",
       type: "raster" as const,
       source: "openstreetmap",
-      paint: { "raster-opacity": 0.88 },
+      //paint: { "raster-opacity": 0.88 },
     },
   ],
 };
@@ -90,6 +177,9 @@ export function WindMap({
   const [pointerReading, setPointerReading] = useState<PointerReading | null>(
     null,
   );
+  const [isTopographyEnabled, setIsTopographyEnabled] = useState(false);
+  const [is3DEnabled, setIs3DEnabled] = useState(false);
+  const [isWindGridEnabled, setIsWindGridEnabled] = useState(false);
   const requestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -103,8 +193,10 @@ export function WindMap({
       center: location.coordinates,
       zoom: 4.1,
       minZoom: 2,
-      maxZoom: 12,
+      maxZoom: 18,
+      maxPitch: 85,
       renderWorldCopies: true,
+
       attributionControl: { compact: true },
     });
     mapRef.current = instance;
@@ -139,7 +231,12 @@ export function WindMap({
       requestRef.current = controller;
       onWindUpdate("loading", null);
 
-      fetchWindField(getVisibleBounds(map), forecastIndex, controller.signal)
+      fetchWindField(
+        getVisibleBounds(map),
+        forecastIndex,
+        map.getZoom(),
+        controller.signal,
+      )
         .then((nextField) => {
           setField(nextField);
           onWindUpdate("ready", nextField);
@@ -186,29 +283,164 @@ export function WindMap({
   }, [forecastIndex, map, onWindUpdate]);
 
   useEffect(() => {
+    if (!map) {
+      return;
+    }
+
+    const configureTerrain = () => {
+      if (!map.isStyleLoaded()) {
+        return;
+      }
+
+      if (!map.getSource("terrainSource")) {
+        map.addSource("terrainSource", {
+          type: "raster-dem",
+          url: "https://tiles.mapterhorn.com/tilejson.json",
+        });
+      }
+
+      if (!map.getSource("hillshadeSource")) {
+        map.addSource("hillshadeSource", {
+          type: "raster-dem",
+          url: "https://tiles.mapterhorn.com/tilejson.json",
+        });
+      }
+
+      if (!map.getLayer("topography-hillshade")) {
+        const firstSymbolLayer = map
+          .getStyle()
+          .layers?.find((layer) => layer.type === "symbol");
+        map.addLayer(
+          {
+            id: "topography-hillshade",
+            type: "hillshade",
+            source: "hillshadeSource",
+            paint: {
+              "hillshade-shadow-color": "#473b24",
+            },
+            layout: {
+              visibility: isTopographyEnabled ? "visible" : "none",
+            },
+          },
+          firstSymbolLayer?.id,
+        );
+      } else {
+        map.setLayoutProperty(
+          "topography-hillshade",
+          "visibility",
+          isTopographyEnabled ? "visible" : "none",
+        );
+      }
+
+      map.setSky({});
+      const activeTerrainSource = map.getTerrain()?.source;
+      if (is3DEnabled && activeTerrainSource !== "terrainSource") {
+        map.setTerrain({ source: "terrainSource", exaggeration: 1 });
+      } else if (!is3DEnabled && activeTerrainSource) {
+        map.setTerrain(null);
+      }
+    };
+
+    map.on("style.load", configureTerrain);
+    configureTerrain();
+    return () => {
+      map.off("style.load", configureTerrain);
+    };
+  }, [is3DEnabled, isTopographyEnabled, map]);
+
+  useEffect(() => {
+    if (!map) {
+      return;
+    }
+
+    const configureWindGrid = () => {
+      if (!map.isStyleLoaded()) {
+        return;
+      }
+
+      const data = createWindGridData(field);
+      const source = map.getSource(WIND_GRID_SOURCE_ID) as
+        | GeoJSONSource
+        | undefined;
+      if (source) {
+        source.setData(data);
+      } else {
+        map.addSource(WIND_GRID_SOURCE_ID, {
+          type: "geojson",
+          data,
+        });
+      }
+
+      const firstSymbolLayer = map
+        .getStyle()
+        .layers?.find((layer) => layer.type === "symbol")?.id;
+      if (!map.getLayer(WIND_GRID_FILL_LAYER_ID)) {
+        map.addLayer(
+          {
+            id: WIND_GRID_FILL_LAYER_ID,
+            type: "fill",
+            source: WIND_GRID_SOURCE_ID,
+            filter: ["==", ["get", "kind"], "cell"],
+            paint: {
+              "fill-color": isDarkMode ? "#82b8d5" : "#438a7b",
+              "fill-opacity": 0.1,
+              "fill-outline-color": isDarkMode
+                ? "rgba(185, 220, 237, 0.4)"
+                : "rgba(46, 113, 101, 0.4)",
+            },
+          },
+          firstSymbolLayer,
+        );
+      }
+      if (!map.getLayer(WIND_GRID_LABEL_LAYER_ID)) {
+        map.addLayer(
+          {
+            id: WIND_GRID_LABEL_LAYER_ID,
+            type: "symbol",
+            source: WIND_GRID_SOURCE_ID,
+            filter: ["==", ["get", "kind"], "label"],
+            layout: {
+              "text-field": ["get", "label"],
+              "text-size": 11,
+              "text-anchor": "center",
+              "text-justify": "center",
+              "text-allow-overlap": true,
+              "text-ignore-placement": true,
+            },
+            paint: {
+              "text-color": isDarkMode ? "#f5fafc" : "#17352d",
+              "text-halo-color": isDarkMode ? "#17232b" : "#ffffff",
+              "text-halo-width": 1.4,
+              "text-halo-blur": 0.3,
+            },
+          },
+          firstSymbolLayer,
+        );
+      }
+
+      const visibility = isWindGridEnabled ? "visible" : "none";
+      map.setLayoutProperty(WIND_GRID_FILL_LAYER_ID, "visibility", visibility);
+      map.setLayoutProperty(WIND_GRID_LABEL_LAYER_ID, "visibility", visibility);
+    };
+
+    map.on("style.load", configureWindGrid);
+    configureWindGrid();
+    return () => {
+      map.off("style.load", configureWindGrid);
+    };
+  }, [field, isDarkMode, isWindGridEnabled, map]);
+
+  useEffect(() => {
     if (!map || !field || !showPointerSpeed) {
       return;
     }
 
     const updatePointerReading = (event: MapMouseEvent) => {
-      const centerLongitude = map.getCenter().lng;
-      let nearestSpeed = 0;
-      let nearestDirection = 0;
-      let nearestDistance = Number.POSITIVE_INFINITY;
-
-      for (const sample of field.samples) {
-        const longitude =
-          sample.longitude +
-          360 * Math.round((centerLongitude - sample.longitude) / 360);
-        const point = map.project([longitude, sample.latitude]);
-        const distance =
-          (point.x - event.point.x) ** 2 + (point.y - event.point.y) ** 2;
-        if (distance < nearestDistance) {
-          nearestDistance = distance;
-          nearestSpeed = sample.speed;
-          nearestDirection = sample.direction;
-        }
-      }
+      const wind = interpolateWind(
+        field.samples,
+        event.lngLat.lat,
+        event.lngLat.lng,
+      );
 
       const mapWidth = map.getCanvas().clientWidth;
       const mapHeight = map.getCanvas().clientHeight;
@@ -227,8 +459,10 @@ export function WindMap({
       setPointerReading({
         x: left,
         y: top,
-        speed: nearestSpeed,
-        direction: nearestDirection,
+        latitude: event.lngLat.lat,
+        longitude: event.lngLat.lng,
+        speed: wind?.speed ?? 0,
+        direction: wind?.direction ?? 0,
         field,
       });
     };
@@ -262,6 +496,20 @@ export function WindMap({
     });
     onThemeChange(nextIsDarkMode);
   };
+  const toggleTopography = () => {
+    setIsTopographyEnabled((enabled) => !enabled);
+  };
+  const toggleWindGrid = () => {
+    setIsWindGridEnabled((enabled) => !enabled);
+  };
+  const toggle3D = () => {
+    const nextIs3DEnabled = !is3DEnabled;
+    setIs3DEnabled(nextIs3DEnabled);
+    mapRef.current?.easeTo({
+      pitch: nextIs3DEnabled ? 52 : 0,
+      duration: 900,
+    });
+  };
   const legendValues = getWindSpeedLegend(speedUnit);
   const pointerDirectionDegrees =
     pointerReading && Number.isFinite(pointerReading.direction)
@@ -271,6 +519,12 @@ export function WindMap({
     pointerDirectionDegrees === null
       ? null
       : getWindDirection(pointerDirectionDegrees);
+  const pointerCoordinates = pointerReading
+    ? formatPointerCoordinate(
+        pointerReading.latitude,
+        pointerReading.longitude,
+      )
+    : null;
 
   return (
     <section
@@ -286,7 +540,7 @@ export function WindMap({
       />
       {showPointerSpeed && field && pointerReading?.field === field && (
         <div
-          aria-label={`Wind speed ${formatWindSpeed(pointerReading.speed, speedUnit)} ${getWindSpeedUnitLabel(speedUnit)}${pointerDirection === null ? ", direction unavailable" : `, from ${pointerDirection}`}`}
+          aria-label={`Wind speed ${formatWindSpeed(pointerReading.speed, speedUnit)} ${getWindSpeedUnitLabel(speedUnit)}${pointerDirection === null ? ", direction unavailable" : `, from ${pointerDirection}`}, at ${pointerCoordinates}`}
           className="wind-pointer-card"
           style={{ left: pointerReading.x, top: pointerReading.y }}
         >
@@ -313,6 +567,9 @@ export function WindMap({
               </>
             )}
           </span>
+          <span className="wind-pointer-card__coordinates">
+            {pointerCoordinates}
+          </span>
         </div>
       )}
 
@@ -326,6 +583,37 @@ export function WindMap({
           type="button"
         >
           <Icon name={isDarkMode ? "sun" : "moon"} />
+        </button>
+        <span className="map-controls__divider" />
+        <button
+          aria-label={`${isWindGridEnabled ? "Hide" : "Show"} Open-Meteo wind grid`}
+          aria-pressed={isWindGridEnabled}
+          className={`map-control-button${isWindGridEnabled ? " map-control-button--active" : ""}`}
+          onClick={toggleWindGrid}
+          title={`${isWindGridEnabled ? "Hide" : "Show"} Open-Meteo wind grid`}
+          type="button"
+        >
+          <Icon name="grid" />
+        </button>
+        <button
+          aria-label={`${isTopographyEnabled ? "Hide" : "Show"} topography layer`}
+          aria-pressed={isTopographyEnabled}
+          className={`map-control-button${isTopographyEnabled ? " map-control-button--active" : ""}`}
+          onClick={toggleTopography}
+          title={`${isTopographyEnabled ? "Hide" : "Show"} topography layer`}
+          type="button"
+        >
+          <Icon name="terrain" />
+        </button>
+        <button
+          aria-label={`Switch ${is3DEnabled ? "off" : "on"} 3D terrain`}
+          aria-pressed={is3DEnabled}
+          className={`map-control-button${is3DEnabled ? " map-control-button--active" : ""}`}
+          onClick={toggle3D}
+          title={`Switch ${is3DEnabled ? "off" : "on"} 3D terrain`}
+          type="button"
+        >
+          <Icon name="cube" />
         </button>
         <span className="map-controls__divider" />
         <button

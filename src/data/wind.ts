@@ -14,8 +14,68 @@ export interface WindSample {
   north: number;
 }
 
+export function interpolateWind(
+  samples: WindSample[],
+  latitude: number,
+  longitude: number,
+): Pick<WindSample, "speed" | "direction" | "east" | "north"> | undefined {
+  const nearest: Array<{ sample: WindSample; distance: number }> = [];
+  const longitudeScale = Math.max(
+    Math.cos((latitude * Math.PI) / 180),
+    0.01,
+  );
+
+  for (const sample of samples) {
+    const rawLongitudeDifference = sample.longitude - longitude;
+    const longitudeDifference =
+      ((((rawLongitudeDifference + 180) % 360) + 360) % 360) - 180;
+    const distance =
+      (latitude - sample.latitude) ** 2 +
+      (longitudeDifference * longitudeScale) ** 2;
+    if (distance === 0) {
+      return sample;
+    }
+
+    let index = 0;
+    while (index < nearest.length && nearest[index].distance <= distance) {
+      index += 1;
+    }
+    if (index < 4) {
+      nearest.splice(index, 0, { sample, distance });
+      if (nearest.length > 4) {
+        nearest.pop();
+      }
+    }
+  }
+
+  if (nearest.length === 0) {
+    return undefined;
+  }
+
+  let totalWeight = 0;
+  let east = 0;
+  let north = 0;
+  for (const { sample, distance } of nearest) {
+    const weight = 1 / distance;
+    totalWeight += weight;
+    east += sample.east * weight;
+    north += sample.north * weight;
+  }
+
+  east /= totalWeight;
+  north /= totalWeight;
+  const directionDegrees = (Math.atan2(-east, -north) * 180) / Math.PI;
+  return {
+    east,
+    north,
+    speed: Math.hypot(east, north),
+    direction: ((directionDegrees % 360) + 360) % 360,
+  };
+}
+
 export interface WindField {
   samples: WindSample[];
+  gridStep: number;
   centerSample: WindSample;
   observedAt: string;
   isStale: boolean;
@@ -60,6 +120,9 @@ const STORAGE_KEY = "zephyr.wind-cache.v3";
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 300;
 const CACHE_GRID_POINTS_PER_SIDE = 6;
+const MAX_GRID_POINTS_PER_FIELD = 100;
+const MIN_GRID_STEP = 0.02;
+const GRID_DETAIL_START_ZOOM = 8;
 
 const memoryCache = new Map<string, CachedForecast>();
 let cacheLoaded = false;
@@ -176,13 +239,21 @@ function normalizeLongitude(longitude: number): number {
   return ((longitude + 540) % 360) - 180;
 }
 
-function createGrid(bounds: GeographicBounds): WindGrid {
+function createGrid(bounds: GeographicBounds, zoom: number): WindGrid {
   const south = Math.max(-80, Math.min(80, bounds.south));
   const north = Math.max(-80, Math.min(80, bounds.north));
-  const latitudeSpan = Math.max(0.25, north - south);
-  const longitudeSpan = Math.max(0.25, bounds.east - bounds.west);
-  const step = Math.max(
-    0.25,
+  const latitudeSpan = Math.max(0.001, north - south);
+  const longitudeSpan = Math.max(0.001, bounds.east - bounds.west);
+  const zoomDetailLevel = Math.max(
+    0,
+    Math.floor(zoom) - GRID_DETAIL_START_ZOOM,
+  );
+  const minimumStep = Math.max(
+    MIN_GRID_STEP,
+    0.25 / 2 ** zoomDetailLevel,
+  );
+  let step = Math.max(
+    minimumStep,
     2 **
       Math.ceil(
         Math.log2(
@@ -190,33 +261,42 @@ function createGrid(bounds: GeographicBounds): WindGrid {
         ),
       ),
   );
-  const firstLatitude = Math.floor(south / step) * step;
-  const lastLatitude = Math.ceil(north / step) * step;
-  const firstLongitude = Math.floor(bounds.west / step) * step;
-  const lastLongitude = Math.ceil(bounds.east / step) * step;
-  const points: Array<[number, number]> = [];
-  const seen = new Set<string>();
 
-  for (
-    let latitude = firstLatitude;
-    latitude <= lastLatitude;
-    latitude += step
-  ) {
-    const safeLatitude = Math.max(-80, Math.min(80, latitude));
+  const createPoints = (gridStep: number) => {
+    const firstLatitude = Math.floor(south / gridStep) * gridStep;
+    const lastLatitude = Math.ceil(north / gridStep) * gridStep;
+    const firstLongitude = Math.floor(bounds.west / gridStep) * gridStep;
+    const lastLongitude = Math.ceil(bounds.east / gridStep) * gridStep;
+    const points: Array<[number, number]> = [];
+    const seen = new Set<string>();
+
     for (
-      let longitude = firstLongitude;
-      longitude <= lastLongitude;
-      longitude += step
+      let latitude = firstLatitude;
+      latitude <= lastLatitude;
+      latitude += gridStep
     ) {
-      const safeLongitude = normalizeLongitude(longitude);
-      const key = coordinateKey(safeLatitude, safeLongitude);
-      if (!seen.has(key)) {
-        seen.add(key);
-        points.push([safeLatitude, safeLongitude]);
+      const safeLatitude = Math.max(-80, Math.min(80, latitude));
+      for (
+        let longitude = firstLongitude;
+        longitude <= lastLongitude;
+        longitude += gridStep
+      ) {
+        const safeLongitude = normalizeLongitude(longitude);
+        const key = coordinateKey(safeLatitude, safeLongitude);
+        if (!seen.has(key)) {
+          seen.add(key);
+          points.push([safeLatitude, safeLongitude]);
+        }
       }
     }
-  }
 
+    return points;
+  };
+  let points = createPoints(step);
+  while (points.length > MAX_GRID_POINTS_PER_FIELD) {
+    step *= 2;
+    points = createPoints(step);
+  }
   return { points, step };
 }
 
@@ -413,6 +493,7 @@ function createField(
   points: Array<[number, number]>,
   bounds: GeographicBounds,
   forecastTime: string,
+  gridStep: number,
 ): WindField {
   const readings = points.map(([latitude, longitude]) => {
     const forecast = memoryCache.get(coordinateKey(latitude, longitude));
@@ -427,22 +508,26 @@ function createField(
     (reading): reading is ForecastReading & { cachedAt: number } =>
       reading !== undefined,
   );
-  if (availableReadings.length !== points.length) {
-    throw new Error("Wind forecasts are not available for this map area.");
-  }
+  const samples = points.flatMap(([latitude, longitude], index) => {
+    const reading = readings[index];
+    if (!reading) {
+      return [];
+    }
 
-  const samples = points.map(([latitude, longitude], index) => {
-    const reading = availableReadings[index];
     const radians = (reading.direction * Math.PI) / 180;
-    return {
+    return [{
       latitude,
       longitude,
       speed: reading.speed,
       direction: reading.direction,
       east: -Math.sin(radians) * reading.speed,
       north: -Math.cos(radians) * reading.speed,
-    };
+    }];
   });
+  if (samples.length === 0) {
+    throw new Error("Wind forecasts are not available for this map area.");
+  }
+
   const centerLatitude = (bounds.south + bounds.north) / 2;
   const centerLongitude = (bounds.west + bounds.east) / 2;
   const centerSample = samples.reduce((nearest, sample) => {
@@ -461,6 +546,7 @@ function createField(
   });
   return {
     samples,
+    gridStep,
     centerSample,
     observedAt: forecastTime,
     isStale: availableReadings.some(
@@ -472,6 +558,7 @@ function createField(
 export async function fetchWindField(
   bounds: GeographicBounds,
   forecastIndex: number,
+  zoom: number,
   signal: AbortSignal,
 ): Promise<WindField> {
   loadCache();
@@ -480,7 +567,7 @@ export async function fetchWindField(
   if (forecastTime === undefined) {
     throw new RangeError("The selected forecast time is outside the 7-day range.");
   }
-  const grid = createGrid(bounds);
+  const grid = createGrid(bounds, zoom);
   const { points } = grid;
   const gridId = getGridId(points);
   const now = Date.now();
@@ -533,7 +620,7 @@ export async function fetchWindField(
         gridId,
         missingPoints: missingPoints.length,
       });
-      return createField(points, bounds, forecastTime);
+      return createField(points, bounds, forecastTime, grid.step);
     }
 
     try {
@@ -564,5 +651,5 @@ export async function fetchWindField(
     }
   }
 
-  return createField(points, bounds, forecastTime);
+  return createField(points, bounds, forecastTime, grid.step);
 }
