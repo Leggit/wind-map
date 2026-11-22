@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Map as MapLibreMap,
+  setWorkerUrl,
   type GeoJSONSource,
   type MapMouseEvent,
 } from "maplibre-gl";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import { interpolateWind, type WindField } from "../data/wind";
 import { getWindDirection } from "../data/wind-directions";
 import {
@@ -55,6 +57,8 @@ const WIND_GRID_FILL_LAYER_ID = "open-meteo-wind-grid-fill";
 const WIND_GRID_LABEL_LAYER_ID = "open-meteo-wind-grid-labels";
 const POINTER_CARD_WIDTH = 152;
 const POINTER_CARD_HEIGHT = 84;
+
+setWorkerUrl(maplibreWorkerUrl);
 
 function createWindGridData(field: WindField | null) {
   const features: WindGridFeature[] = [];
