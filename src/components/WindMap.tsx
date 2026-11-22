@@ -188,7 +188,7 @@ export function WindMap({
 
     const instance = new MapLibreMap({
       container: mapContainerRef.current,
-      style: MAP_STYLE,
+      style: isDarkMode ? DARK_MAP_STYLE : MAP_STYLE,
       center: location.coordinates,
       zoom: 4.1,
       minZoom: 2,

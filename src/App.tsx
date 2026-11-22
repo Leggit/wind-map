@@ -20,7 +20,11 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(true);
   const [showPointerSpeed, setShowPointerSpeed] = useState(true);
   const [speedUnit, setSpeedUnit] = useState<WindSpeedUnit>("kmh");
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches,
+  );
   const [forecastIndex, setForecastIndex] = useState(0);
 
   const handleWindUpdate = useCallback(
