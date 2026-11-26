@@ -1,30 +1,20 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  FORECAST_HOURLY_HOURS,
-  FORECAST_STEP_HOURS,
   FORECAST_TIME_COUNT,
   getForecastTime,
-  type WindField,
 } from "../data/wind";
 import {
-  formatWindSpeed,
-  getWindSpeedUnitLabel,
   WIND_SPEED_UNITS,
   type WindSpeedUnit,
 } from "../data/wind-units";
-import { getWindDirection } from "../data/wind-directions";
 import type { MapLocation } from "../types";
 import { Icon } from "./Icon";
 
 interface WindSidebarProps {
-  windField: WindField | null;
-  windStatus: "loading" | "ready" | "error";
-  isPlaying: boolean;
   showPointerSpeed: boolean;
   speedUnit: WindSpeedUnit;
   forecastIndex: number;
   onLocationChange: (location: MapLocation) => void;
-  onPlaybackChange: (isPlaying: boolean) => void;
   onPointerSpeedChange: (show: boolean) => void;
   onSpeedUnitChange: (unit: WindSpeedUnit) => void;
   onForecastIndexChange: (index: number) => void;
@@ -39,14 +29,10 @@ function formatForecastTime(value: string): string {
 }
 
 export function WindSidebar({
-  windField,
-  windStatus,
-  isPlaying,
   showPointerSpeed,
   speedUnit,
   forecastIndex,
   onLocationChange,
-  onPlaybackChange,
   onPointerSpeedChange,
   onSpeedUnitChange,
   onForecastIndexChange,
@@ -56,6 +42,29 @@ export function WindSidebar({
   const [searchState, setSearchState] = useState<"idle" | "loading" | "error">(
     "idle",
   );
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!isMobileExpanded) {
+      return;
+    }
+
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsMobileExpanded(false);
+        menuButtonRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isMobileExpanded]);
+
+  const closeMenu = () => {
+    setIsMobileExpanded(false);
+    menuButtonRef.current?.focus();
+  };
 
   const searchLocation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -102,69 +111,79 @@ export function WindSidebar({
     }
   };
 
-  const primaryWind = windField?.centerSample;
-  const windSpeed =
-    primaryWind === undefined
-      ? null
-      : formatWindSpeed(primaryWind.speed, speedUnit);
-  const windDirection = primaryWind
-    ? getWindDirection(primaryWind.direction)
-    : "—";
   const forecastTime = formatForecastTime(getForecastTime(forecastIndex));
 
   return (
-    <aside
-      aria-label="Wind conditions"
-      className={`sidebar${isMobileExpanded ? " sidebar--expanded" : ""}`}
-    >
-      <header className="brand">
-        <span className="brand__name">Wind map</span>
+    <>
+      {isMobileExpanded && (
         <button
-          aria-controls="wind-sidebar-content"
-          aria-expanded={isMobileExpanded}
-          aria-label={
-            isMobileExpanded ? "Hide wind controls" : "Show wind controls"
-          }
-          className="sidebar__toggle"
-          onClick={() => setIsMobileExpanded(!isMobileExpanded)}
+          aria-label="Close wind menu"
+          className="sidebar-backdrop"
+          onClick={closeMenu}
+          tabIndex={-1}
           type="button"
-        >
-          {isMobileExpanded ? "Close" : "Details"}
-        </button>
-      </header>
-
-      <div className="sidebar__content" id="wind-sidebar-content">
-        <form className="location-search" onSubmit={searchLocation}>
-          <Icon className="location-search__icon" name="search" />
-          <input
-            aria-label="Search a place"
-            onChange={(event) => {
-              setQuery(event.target.value);
-              if (searchState === "error") setSearchState("idle");
-            }}
-            placeholder="Search any place..."
-            value={query}
-          />
+        />
+      )}
+      <button
+        ref={menuButtonRef}
+        aria-controls="wind-sidebar-content"
+        aria-expanded={isMobileExpanded}
+        aria-label={isMobileExpanded ? "Close wind menu" : "Open wind menu"}
+        className="sidebar__open"
+        onClick={() => setIsMobileExpanded(true)}
+        type="button"
+      >
+        <Icon name="menu" />
+      </button>
+      <aside
+        aria-label="Wind controls"
+        aria-modal={isMobileExpanded || undefined}
+        className={`sidebar${isMobileExpanded ? " sidebar--expanded" : ""}`}
+        role={isMobileExpanded ? "dialog" : undefined}
+      >
+        <header className="brand">
           <button
-            aria-label="Search"
-            disabled={searchState === "loading"}
-            type="submit"
+            aria-controls="wind-sidebar-content"
+            aria-expanded={isMobileExpanded}
+            aria-label="Close wind menu"
+            className="sidebar__toggle"
+            onClick={closeMenu}
+            ref={closeButtonRef}
+            type="button"
           >
-            {searchState === "loading" ? "…" : "↵"}
+            <Icon name="close" />
           </button>
-        </form>
-        {searchState === "error" && (
-          <p className="search-error" role="status">
-            No place found. Try another search.
-          </p>
-        )}
+        </header>
 
-        <section className="conditions">
-          <div className="speed-card">
-            <div className="speed-card__header">
-              <span className="speed-card__label">
-                Wind speed at map center
-              </span>
+        <div className="sidebar__content" id="wind-sidebar-content">
+          <form className="location-search" onSubmit={searchLocation}>
+            <Icon className="location-search__icon" name="search" />
+            <input
+              aria-label="Search a place"
+              onChange={(event) => {
+                setQuery(event.target.value);
+                if (searchState === "error") setSearchState("idle");
+              }}
+              placeholder="Search any place..."
+              value={query}
+            />
+            <button
+              aria-label="Search"
+              disabled={searchState === "loading"}
+              type="submit"
+            >
+              {searchState === "loading" ? "…" : "↵"}
+            </button>
+          </form>
+          {searchState === "error" && (
+            <p className="search-error" role="status">
+              No place found. Try another search.
+            </p>
+          )}
+
+          <section className="animation-section">
+            <div className="unit-control">
+              <span>Wind speed units</span>
               <div
                 aria-label="Wind speed units"
                 className="unit-selector"
@@ -185,138 +204,48 @@ export function WindSidebar({
                 ))}
               </div>
             </div>
-            <div className="speed-card__value">
-              {windSpeed === null ? (
-                <span className="speed-placeholder">—</span>
-              ) : (
-                windSpeed
-              )}
-              <span className="speed-card__unit">
-                {getWindSpeedUnitLabel(speedUnit)}
-              </span>
-            </div>
-            <div aria-hidden="true" className="speed-card__decoration">
-              <span />
-              <span />
-              <span />
-            </div>
-          </div>
 
-          <div className="direction-row">
-            <div className="direction-icon">
-              <span
-                className="direction-icon__arrow"
-                style={{
-                  transform: `translate(-50%, -50%) rotate(${(primaryWind?.direction ?? 0) + 180}deg)`,
-                }}
+            <div className="forecast-control">
+              <div className="section-label">
+                <label htmlFor="forecast-time">FORECAST TIME</label>
+                <span className="forecast-control__time">{forecastTime}</span>
+              </div>
+              <input
+                aria-label="Forecast time"
+                aria-valuetext={forecastTime}
+                id="forecast-time"
+                max={FORECAST_TIME_COUNT - 1}
+                min={0}
+                onChange={(event) =>
+                  onForecastIndexChange(event.currentTarget.valueAsNumber)
+                }
+                type="range"
+                value={forecastIndex}
+              />
+              <div aria-hidden="true" className="forecast-control__range">
+                <span>Now</span>
+                <span>+7d</span>
+              </div>
+            </div>
+
+            <div className="pointer-setting">
+              <div className="pointer-setting__copy">
+                <strong>Pointer info</strong>
+              </div>
+              <button
+                aria-checked={showPointerSpeed}
+                aria-label="Show wind info beside pointer"
+                className={`setting-switch${showPointerSpeed ? " setting-switch--on" : ""}`}
+                onClick={() => onPointerSpeedChange(!showPointerSpeed)}
+                role="switch"
+                type="button"
               >
-                ↑
-              </span>
-              <span className="direction-icon__north">N</span>
+                <span />
+              </button>
             </div>
-            <div className="direction-copy">
-              <span className="direction-copy__label">WIND DIRECTION</span>
-              <strong>{windDirection}</strong>
-              <span>
-                {primaryWind
-                  ? `${Math.round(primaryWind.direction)}° · from ${windDirection}`
-                  : "Waiting for readings"}
-              </span>
-            </div>
-            <Icon className="direction-row__wind" name="wind" />
-          </div>
-
-          <div className="data-timestamp">
-            <Icon name={windStatus === "error" ? "refresh" : "wind"} />
-            <span>
-              {windStatus === "error"
-                ? "Could not reach the weather service"
-                : windField
-                  ? `Forecast for ${formatForecastTime(windField.observedAt)}`
-                  : "Loading wind forecast"}
-            </span>
-          </div>
-        </section>
-
-        <section className="animation-section">
-          <div className="forecast-control">
-            <div className="section-label">
-              <label htmlFor="forecast-time">FORECAST TIME</label>
-              <span className="forecast-control__time">{forecastTime}</span>
-            </div>
-            <input
-              aria-label="Forecast time"
-              aria-valuetext={forecastTime}
-              id="forecast-time"
-              max={FORECAST_TIME_COUNT - 1}
-              min={0}
-              onChange={(event) =>
-                onForecastIndexChange(event.currentTarget.valueAsNumber)
-              }
-              type="range"
-              value={forecastIndex}
-            />
-            <div aria-hidden="true" className="forecast-control__range">
-              <span>Now</span>
-              <span>+7d</span>
-            </div>
-            <span className="forecast-control__hint">
-              Hourly for {FORECAST_HOURLY_HOURS}h, then every{" "}
-              {FORECAST_STEP_HOURS}h · local time
-            </span>
-          </div>
-          <div className="section-label">
-            <span>MAP OVERLAY</span>
-            <span className="overlay-tag">PARTICLES</span>
-          </div>
-          <div className="overlay-row">
-            <div className="overlay-row__icon">
-              <Icon name="wind" />
-            </div>
-            <div className="overlay-row__copy">
-              <strong>Wind flow</strong>
-              <span>Animated surface winds</span>
-            </div>
-            <button
-              aria-label={
-                isPlaying ? "Pause wind animation" : "Play wind animation"
-              }
-              aria-pressed={isPlaying}
-              className={`play-toggle${isPlaying ? " play-toggle--active" : ""}`}
-              onClick={() => onPlaybackChange(!isPlaying)}
-              type="button"
-            >
-              <Icon name={isPlaying ? "pause" : "play"} />
-            </button>
-          </div>
-          <div className="pointer-setting">
-            <div className="pointer-setting__copy">
-              <strong>Pointer speed</strong>
-              <span>Show nearest reading on hover</span>
-            </div>
-            <button
-              aria-checked={showPointerSpeed}
-              aria-label="Show wind speed beside pointer"
-              className={`setting-switch${showPointerSpeed ? " setting-switch--on" : ""}`}
-              onClick={() => onPointerSpeedChange(!showPointerSpeed)}
-              role="switch"
-              type="button"
-            >
-              <span />
-            </button>
-          </div>
-        </section>
-
-        <div className="sidebar-footer">
-          <span className="footer-symbol">◎</span>
-          <span>
-            WIND DATA BY{" "}
-            <a href="https://open-meteo.com/" rel="noreferrer" target="_blank">
-              OPEN-METEO
-            </a>
-          </span>
+          </section>
         </div>
-      </div>
-    </aside>
+      </aside>
+    </>
   );
 }

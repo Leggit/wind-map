@@ -1,5 +1,4 @@
-import { useCallback, useState } from "react";
-import type { WindField } from "./data/wind";
+import { useState } from "react";
 import type { WindSpeedUnit } from "./data/wind-units";
 import { WindMap } from "./components/WindMap";
 import { WindSidebar } from "./components/WindSidebar";
@@ -13,10 +12,6 @@ const INITIAL_LOCATION: MapLocation = {
 
 function App() {
   const [location, setLocation] = useState(INITIAL_LOCATION);
-  const [windField, setWindField] = useState<WindField | null>(null);
-  const [windStatus, setWindStatus] = useState<"loading" | "ready" | "error">(
-    "loading",
-  );
   const [isPlaying, setIsPlaying] = useState(true);
   const [showPointerSpeed, setShowPointerSpeed] = useState(true);
   const [speedUnit, setSpeedUnit] = useState<WindSpeedUnit>("kmh");
@@ -27,25 +22,13 @@ function App() {
   );
   const [forecastIndex, setForecastIndex] = useState(0);
 
-  const handleWindUpdate = useCallback(
-    (status: "loading" | "ready" | "error", field: WindField | null) => {
-      setWindStatus(status);
-      setWindField(field);
-    },
-    [],
-  );
-
   return (
     <main className={`app-shell${isDarkMode ? " app-shell--dark" : ""}`}>
       <WindSidebar
-        windField={windField}
-        windStatus={windStatus}
-        isPlaying={isPlaying}
         showPointerSpeed={showPointerSpeed}
         speedUnit={speedUnit}
         forecastIndex={forecastIndex}
         onLocationChange={setLocation}
-        onPlaybackChange={setIsPlaying}
         onPointerSpeedChange={setShowPointerSpeed}
         onSpeedUnitChange={setSpeedUnit}
         onForecastIndexChange={setForecastIndex}
@@ -58,7 +41,7 @@ function App() {
         speedUnit={speedUnit}
         forecastIndex={forecastIndex}
         onThemeChange={setIsDarkMode}
-        onWindUpdate={handleWindUpdate}
+        onPlaybackChange={setIsPlaying}
       />
     </main>
   );

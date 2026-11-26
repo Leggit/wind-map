@@ -28,10 +28,7 @@ interface WindMapProps {
   speedUnit: WindSpeedUnit;
   forecastIndex: number;
   onThemeChange: (isDarkMode: boolean) => void;
-  onWindUpdate: (
-    status: "loading" | "ready" | "error",
-    field: WindField | null,
-  ) => void;
+  onPlaybackChange: (isPlaying: boolean) => void;
 }
 
 interface PointerReading {
@@ -171,7 +168,7 @@ export function WindMap({
   speedUnit,
   forecastIndex,
   onThemeChange,
-  onWindUpdate,
+  onPlaybackChange,
 }: WindMapProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -180,9 +177,10 @@ export function WindMap({
   const [pointerReading, setPointerReading] = useState<PointerReading | null>(
     null,
   );
-  const [isTopographyEnabled, setIsTopographyEnabled] = useState(false);
-  const [is3DEnabled, setIs3DEnabled] = useState(false);
+  const [isTerrainEnabled, setIsTerrainEnabled] = useState(false);
   const [isWindGridEnabled, setIsWindGridEnabled] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const requestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -232,7 +230,6 @@ export function WindMap({
       requestRef.current?.abort();
       const controller = new AbortController();
       requestRef.current = controller;
-      onWindUpdate("loading", null);
 
       fetchWindField(
         getVisibleBounds(map),
@@ -242,14 +239,12 @@ export function WindMap({
       )
         .then((nextField) => {
           setField(nextField);
-          onWindUpdate("ready", nextField);
         })
         .catch((error: unknown) => {
           if (error instanceof DOMException && error.name === "AbortError") {
             return;
           }
           setField(null);
-          onWindUpdate("error", null);
           console.error("Unable to load wind data.", error);
         });
     };
@@ -276,7 +271,7 @@ export function WindMap({
       map.off("load", handleLoad);
       map.off("moveend", scheduleRefresh);
     };
-  }, [forecastIndex, map, onWindUpdate]);
+  }, [forecastIndex, map]);
 
   useEffect(() => {
     if (!map) {
@@ -285,6 +280,22 @@ export function WindMap({
 
     const configureTerrain = () => {
       if (!map.isStyleLoaded()) {
+        return;
+      }
+
+      map.setSky({});
+
+      if (!isTerrainEnabled) {
+        if (map.getLayer("topography-hillshade")) {
+          map.setLayoutProperty(
+            "topography-hillshade",
+            "visibility",
+            "none",
+          );
+        }
+        if (map.getTerrain()) {
+          map.setTerrain(null);
+        }
         return;
       }
 
@@ -314,26 +325,17 @@ export function WindMap({
             paint: {
               "hillshade-shadow-color": "#473b24",
             },
-            layout: {
-              visibility: isTopographyEnabled ? "visible" : "none",
-            },
+            layout: { visibility: "visible" },
           },
           firstSymbolLayer?.id,
         );
       } else {
-        map.setLayoutProperty(
-          "topography-hillshade",
-          "visibility",
-          isTopographyEnabled ? "visible" : "none",
-        );
+        map.setLayoutProperty("topography-hillshade", "visibility", "visible");
       }
 
-      map.setSky({});
       const activeTerrainSource = map.getTerrain()?.source;
-      if (is3DEnabled && activeTerrainSource !== "terrainSource") {
+      if (activeTerrainSource !== "terrainSource") {
         map.setTerrain({ source: "terrainSource", exaggeration: 1 });
-      } else if (!is3DEnabled && activeTerrainSource) {
-        map.setTerrain(null);
       }
     };
 
@@ -342,7 +344,7 @@ export function WindMap({
     return () => {
       map.off("style.load", configureTerrain);
     };
-  }, [is3DEnabled, isTopographyEnabled, map]);
+  }, [isTerrainEnabled, map]);
 
   useEffect(() => {
     if (!map) {
@@ -485,6 +487,43 @@ export function WindMap({
       duration: 900,
     });
   };
+  const locateUser = () => {
+    if (!navigator.geolocation) {
+      setLocationError("Location is unavailable in this browser.");
+      return;
+    }
+
+    setLocationError(null);
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        setIsLocating(false);
+        const map = mapRef.current;
+        if (!map) {
+          setLocationError("The map is not ready. Try locating again.");
+          return;
+        }
+
+        map.flyTo({
+          center: [coords.longitude, coords.latitude],
+          zoom: 10,
+          duration: 1100,
+        });
+      },
+      (error) => {
+        setIsLocating(false);
+        console.error("Unable to determine your current location.", error);
+        setLocationError(
+          error.code === 1
+            ? "Location permission was denied."
+            : error.code === 3
+              ? "The location request timed out."
+              : "Unable to determine your location.",
+        );
+      },
+      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 10_000 },
+    );
+  };
   const toggleMapTheme = () => {
     const nextIsDarkMode = !isDarkMode;
     mapRef.current?.setStyle(nextIsDarkMode ? DARK_MAP_STYLE : MAP_STYLE, {
@@ -492,17 +531,14 @@ export function WindMap({
     });
     onThemeChange(nextIsDarkMode);
   };
-  const toggleTopography = () => {
-    setIsTopographyEnabled((enabled) => !enabled);
-  };
   const toggleWindGrid = () => {
     setIsWindGridEnabled((enabled) => !enabled);
   };
-  const toggle3D = () => {
-    const nextIs3DEnabled = !is3DEnabled;
-    setIs3DEnabled(nextIs3DEnabled);
+  const toggleTerrain = () => {
+    const nextIsTerrainEnabled = !isTerrainEnabled;
+    setIsTerrainEnabled(nextIsTerrainEnabled);
     mapRef.current?.easeTo({
-      pitch: nextIs3DEnabled ? 52 : 0,
+      pitch: nextIsTerrainEnabled ? 30 : 0,
       duration: 900,
     });
   };
@@ -534,6 +570,11 @@ export function WindMap({
         isPlaying={isPlaying}
         map={map}
       />
+      {(locationError || isLocating) && (
+        <div aria-live="polite" className="map-location-message" role="status">
+          {locationError ?? "Finding your location…"}
+        </div>
+      )}
       {showPointerSpeed && field && pointerReading?.field === field && (
         <div
           aria-label={`Wind speed ${formatWindSpeed(pointerReading.speed, speedUnit)} ${getWindSpeedUnitLabel(speedUnit)}${pointerDirection === null ? ", direction unavailable" : `, from ${pointerDirection}`}, at ${pointerCoordinates}`}
@@ -592,24 +633,24 @@ export function WindMap({
           <Icon name="grid" />
         </button>
         <button
-          aria-label={`${isTopographyEnabled ? "Hide" : "Show"} topography layer`}
-          aria-pressed={isTopographyEnabled}
-          className={`map-control-button${isTopographyEnabled ? " map-control-button--active" : ""}`}
-          onClick={toggleTopography}
-          title={`${isTopographyEnabled ? "Hide" : "Show"} topography layer`}
+          aria-label={`${isTerrainEnabled ? "Disable" : "Enable"} terrain and topography`}
+          aria-pressed={isTerrainEnabled}
+          className={`map-control-button${isTerrainEnabled ? " map-control-button--active" : ""}`}
+          onClick={toggleTerrain}
+          title={`${isTerrainEnabled ? "Disable" : "Enable"} terrain and topography`}
           type="button"
         >
           <Icon name="terrain" />
         </button>
         <button
-          aria-label={`Switch ${is3DEnabled ? "off" : "on"} 3D terrain`}
-          aria-pressed={is3DEnabled}
-          className={`map-control-button${is3DEnabled ? " map-control-button--active" : ""}`}
-          onClick={toggle3D}
-          title={`Switch ${is3DEnabled ? "off" : "on"} 3D terrain`}
+          aria-label={isPlaying ? "Pause wind particles" : "Play wind particles"}
+          aria-pressed={isPlaying}
+          className={`map-control-button${isPlaying ? " map-control-button--active" : ""}`}
+          onClick={() => onPlaybackChange(!isPlaying)}
+          title={isPlaying ? "Pause wind particles" : "Play wind particles"}
           type="button"
         >
-          <Icon name="cube" />
+          <Icon name={isPlaying ? "pause" : "play"} />
         </button>
         <span className="map-controls__divider" />
         <button
@@ -620,6 +661,17 @@ export function WindMap({
           type="button"
         >
           <Icon name="compass" />
+        </button>
+        <button
+          aria-busy={isLocating}
+          aria-label={isLocating ? "Finding your location" : "Locate me"}
+          className="map-control-button"
+          disabled={isLocating}
+          onClick={locateUser}
+          title={isLocating ? "Finding your location" : "Locate me"}
+          type="button"
+        >
+          <Icon name="pin" />
         </button>
         <span className="map-controls__divider" />
         <button
@@ -657,6 +709,19 @@ export function WindMap({
           {legendValues.map((value) => (
             <span key={value}>{value}</span>
           ))}
+        </div>
+        <div className="map-legend__attribution">
+          <a href="https://open-meteo.com/" rel="noreferrer" target="_blank">
+            Weather data by Open-Meteo.com
+          </a>
+          {" · "}
+          <a
+            href="https://creativecommons.org/licenses/by/4.0/"
+            rel="noreferrer"
+            target="_blank"
+          >
+            CC BY 4.0
+          </a>
         </div>
       </div>
     </section>

@@ -13,8 +13,9 @@ type IconName =
   | "moon"
   | "sun"
   | "terrain"
-  | "cube"
-  | "grid";
+  | "grid"
+  | "menu"
+  | "close";
 
 interface IconProps extends SVGProps<SVGSVGElement> {
   name: IconName;
@@ -83,16 +84,23 @@ const paths: Record<IconName, ReactNode> = {
       <path d="m8 9 2-3 3 4m3 0 2-3 4 6" />
     </>
   ),
-  cube: (
-    <>
-      <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" />
-      <path d="m4.3 7.7 7.7 4.4 7.7-4.4M12 21v-8.9m0 0V3" />
-    </>
-  ),
   grid: (
     <>
       <rect x="3.5" y="3.5" width="17" height="17" rx="1.5" />
       <path d="M9 3.5v17m6-17v17m-11.5-11h17m-17 6h17" />
+    </>
+  ),
+  menu: (
+    <>
+      <path d="M4 6h16" />
+      <path d="M4 12h16" />
+      <path d="M4 18h16" />
+    </>
+  ),
+  close: (
+    <>
+      <path d="m6 6 12 12" />
+      <path d="M18 6 6 18" />
     </>
   ),
 };
