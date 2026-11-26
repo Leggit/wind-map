@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type FocusEvent,
+  type KeyboardEvent,
+} from "react";
 import {
   Map as MapLibreMap,
   setWorkerUrl,
@@ -22,6 +29,7 @@ import { WindParticles } from "./WindParticles";
 
 interface WindMapProps {
   location: MapLocation;
+  onLocationChange: (location: MapLocation) => void;
   isPlaying: boolean;
   showPointerSpeed: boolean;
   isDarkMode: boolean;
@@ -162,6 +170,7 @@ function getVisibleBounds(map: MapLibreMap) {
 
 export function WindMap({
   location,
+  onLocationChange,
   isPlaying,
   showPointerSpeed,
   isDarkMode,
@@ -181,7 +190,23 @@ export function WindMap({
   const [isWindGridEnabled, setIsWindGridEnabled] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [searchState, setSearchState] = useState<"idle" | "loading" | "error">(
+    "idle",
+  );
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const searchToggleRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const requestRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const mobileQuery = window.matchMedia("(max-width: 760px)");
+    const updateViewport = () => setIsMobileViewport(mobileQuery.matches);
+    updateViewport();
+    mobileQuery.addEventListener("change", updateViewport);
+    return () => mobileQuery.removeEventListener("change", updateViewport);
+  }, []);
 
   useEffect(() => {
     if (!mapContainerRef.current) {
@@ -287,11 +312,7 @@ export function WindMap({
 
       if (!isTerrainEnabled) {
         if (map.getLayer("topography-hillshade")) {
-          map.setLayoutProperty(
-            "topography-hillshade",
-            "visibility",
-            "none",
-          );
+          map.setLayoutProperty("topography-hillshade", "visibility", "none");
         }
         if (map.getTerrain()) {
           map.setTerrain(null);
@@ -345,6 +366,22 @@ export function WindMap({
       map.off("style.load", configureTerrain);
     };
   }, [isTerrainEnabled, map]);
+
+  useEffect(() => {
+    if (!map) {
+      return;
+    }
+
+    const syncTerrainModeWithPitch = () => {
+      setIsTerrainEnabled(map.getPitch() > 1);
+    };
+
+    map.on("pitch", syncTerrainModeWithPitch);
+    syncTerrainModeWithPitch();
+    return () => {
+      map.off("pitch", syncTerrainModeWithPitch);
+    };
+  }, [map]);
 
   useEffect(() => {
     if (!map) {
@@ -480,12 +517,71 @@ export function WindMap({
     });
   };
 
-  const recenter = () => {
-    mapRef.current?.flyTo({
-      center: location.coordinates,
-      zoom: 4.1,
-      duration: 900,
-    });
+  const closeSearch = () => {
+    setIsSearchExpanded(false);
+    searchToggleRef.current?.focus();
+  };
+  const searchLocation = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const searchTerm = query.trim();
+    if (!searchTerm) {
+      return;
+    }
+
+    setSearchState("loading");
+    try {
+      const params = new URLSearchParams({
+        q: searchTerm,
+        format: "jsonv2",
+        limit: "1",
+      });
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?${params.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error(`Location search failed (${response.status}).`);
+      }
+
+      const results: Array<{
+        lat: string;
+        lon: string;
+        name: string;
+        display_name: string;
+      }> = await response.json();
+      const result = results[0];
+      if (!result) {
+        setSearchState("error");
+        return;
+      }
+
+      onLocationChange({
+        name: result.name || result.display_name.split(",")[0],
+        coordinates: [Number(result.lon), Number(result.lat)],
+      });
+      setQuery("");
+      setSearchState("idle");
+      if (isMobileViewport) {
+        closeSearch();
+      }
+    } catch (error) {
+      console.error("Unable to search for this location.", error);
+      setSearchState("error");
+    }
+  };
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
+    if (event.key === "Escape" && isMobileViewport && isSearchExpanded) {
+      closeSearch();
+    }
+  };
+  const handleSearchBlur = (event: FocusEvent<HTMLFormElement>) => {
+    if (
+      isMobileViewport &&
+      isSearchExpanded &&
+      !(event.relatedTarget instanceof Node &&
+        event.currentTarget.contains(event.relatedTarget))
+    ) {
+      setIsSearchExpanded(false);
+    }
   };
   const locateUser = () => {
     if (!navigator.geolocation) {
@@ -552,10 +648,7 @@ export function WindMap({
       ? null
       : getWindDirection(pointerDirectionDegrees);
   const pointerCoordinates = pointerReading
-    ? formatPointerCoordinate(
-        pointerReading.latitude,
-        pointerReading.longitude,
-      )
+    ? formatPointerCoordinate(pointerReading.latitude, pointerReading.longitude)
     : null;
 
   return (
@@ -570,6 +663,58 @@ export function WindMap({
         isPlaying={isPlaying}
         map={map}
       />
+      <div className="map-search-container">
+        <form
+          aria-label="Search for a place"
+          className={`map-search${isSearchExpanded ? " map-search--expanded" : ""}`}
+          onBlur={handleSearchBlur}
+          onKeyDown={handleSearchKeyDown}
+          onSubmit={searchLocation}
+        >
+          <button
+            ref={searchToggleRef}
+            aria-controls="map-location-search"
+            aria-expanded={isMobileViewport ? isSearchExpanded : true}
+            aria-label="Search places"
+            className="map-search__toggle"
+            onClick={() => {
+              setIsSearchExpanded(true);
+              window.setTimeout(() => searchInputRef.current?.focus(), 0);
+            }}
+            type="button"
+          >
+            <Icon name="search" />
+          </button>
+          <input
+            ref={searchInputRef}
+            aria-label="Search a place"
+            aria-hidden={isMobileViewport && !isSearchExpanded}
+            disabled={isMobileViewport && !isSearchExpanded}
+            id="map-location-search"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              if (searchState === "error") setSearchState("idle");
+            }}
+            placeholder="Search any place..."
+            tabIndex={isMobileViewport && !isSearchExpanded ? -1 : 0}
+            value={query}
+          />
+          <button
+            aria-label="Search"
+            className="map-search__submit"
+            disabled={searchState === "loading"}
+            tabIndex={isMobileViewport && !isSearchExpanded ? -1 : 0}
+            type="submit"
+          >
+            {searchState === "loading" ? "…" : <Icon name="search" />}
+          </button>
+        </form>
+        {searchState === "error" && (
+          <p className="map-search__error" role="status">
+            No place found. Try another search.
+          </p>
+        )}
+      </div>
       {(locationError || isLocating) && (
         <div aria-live="polite" className="map-location-message" role="status">
           {locationError ?? "Finding your location…"}
@@ -581,29 +726,13 @@ export function WindMap({
           className="wind-pointer-card"
           style={{ left: pointerReading.x, top: pointerReading.y }}
         >
-          <span className="wind-pointer-card__label">WIND SPEED</span>
           <strong>
             {formatWindSpeed(pointerReading.speed, speedUnit)}
             <small>{getWindSpeedUnitLabel(speedUnit)}</small>
+            &nbsp;
+            <span>{pointerDirection}</span>
           </strong>
-          <span className="wind-pointer-card__direction">
-            {pointerDirection === null ? (
-              "Direction unavailable"
-            ) : (
-              <>
-                <span
-                  aria-hidden="true"
-                  className="wind-pointer-card__arrow"
-                  style={{
-                    transform: `rotate(${pointerReading.direction + 180}deg)`,
-                  }}
-                >
-                  ↑
-                </span>
-                from {pointerDirection}
-              </>
-            )}
-          </span>
+
           <span className="wind-pointer-card__coordinates">
             {pointerCoordinates}
           </span>
@@ -635,15 +764,17 @@ export function WindMap({
         <button
           aria-label={`${isTerrainEnabled ? "Disable" : "Enable"} terrain and topography`}
           aria-pressed={isTerrainEnabled}
-          className={`map-control-button${isTerrainEnabled ? " map-control-button--active" : ""}`}
+          className={`map-control-button map-control-button--terrain${isTerrainEnabled ? " map-control-button--active" : ""}`}
           onClick={toggleTerrain}
           title={`${isTerrainEnabled ? "Disable" : "Enable"} terrain and topography`}
           type="button"
         >
-          <Icon name="terrain" />
+          <span aria-hidden="true">3D</span>
         </button>
         <button
-          aria-label={isPlaying ? "Pause wind particles" : "Play wind particles"}
+          aria-label={
+            isPlaying ? "Pause wind particles" : "Play wind particles"
+          }
           aria-pressed={isPlaying}
           className={`map-control-button${isPlaying ? " map-control-button--active" : ""}`}
           onClick={() => onPlaybackChange(!isPlaying)}
@@ -653,15 +784,6 @@ export function WindMap({
           <Icon name={isPlaying ? "pause" : "play"} />
         </button>
         <span className="map-controls__divider" />
-        <button
-          aria-label="Return to selected location"
-          className="map-control-button"
-          onClick={recenter}
-          title="Return to selected location"
-          type="button"
-        >
-          <Icon name="compass" />
-        </button>
         <button
           aria-busy={isLocating}
           aria-label={isLocating ? "Finding your location" : "Locate me"}
@@ -673,10 +795,10 @@ export function WindMap({
         >
           <Icon name="pin" />
         </button>
-        <span className="map-controls__divider" />
+        <span className="map-controls__divider map-controls__zoom-divider" />
         <button
           aria-label="Zoom in"
-          className="map-control-button"
+          className="map-control-button map-control-button--zoom"
           onClick={() => zoom(1)}
           title="Zoom in"
           type="button"
@@ -685,7 +807,7 @@ export function WindMap({
         </button>
         <button
           aria-label="Zoom out"
-          className="map-control-button"
+          className="map-control-button map-control-button--zoom"
           onClick={() => zoom(-1)}
           title="Zoom out"
           type="button"

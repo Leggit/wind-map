@@ -28,13 +28,13 @@ function App() {
         showPointerSpeed={showPointerSpeed}
         speedUnit={speedUnit}
         forecastIndex={forecastIndex}
-        onLocationChange={setLocation}
         onPointerSpeedChange={setShowPointerSpeed}
         onSpeedUnitChange={setSpeedUnit}
         onForecastIndexChange={setForecastIndex}
       />
       <WindMap
         location={location}
+        onLocationChange={setLocation}
         isPlaying={isPlaying}
         showPointerSpeed={showPointerSpeed}
         isDarkMode={isDarkMode}
